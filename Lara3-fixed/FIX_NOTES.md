@@ -62,6 +62,35 @@ remote call session destroyed
 - الجلسة تبقى حيّة عند الخلفية (keepalive محصّن + عدم التدمير).
 - مسار استرجاع يدوي/تلقائي بدل إعادة تشغيل التطبيق.
 
+## Lara4 — إصلاحات إضافية (Session Stability Hardening)
+
+### 8) `lara/kexploit/darksword.m` — إصلاحات حرجة
+- **إصلاح mutex**: `pthread_mutex_lock` مفقود في `set_target_kaddr` أدى إلى unlock بدون lock.
+- **إصلاح نجاح setsockopt**: `pthread_mutex_unlock` مفقود عند النجاح (return) أدى إلى deadlock.
+- **Bounds checking**: `control_socket_idx + 1` بدون تحقق من حدود المصفوفة (`socket_ports_count`).
+- ** wired_mapping fix**: `surface_munlock` على `wired_mapping` غير مهيأ في non-A18.
+
+### 9) `lara/lara.swift` — إصلاحات Timer و Error
+- **Timer lifecycle**: `startHealthCheckTimer` يُستدعى فقط عند `dsready = true`.
+- **Timer invalidate**: `stopHealthCheckTimer` عند الخلفية/خروج الـ exploit.
+- **@retroactive Error**: إصلاح التوافق مع Swift 6.
+
+### 10) `lara/classes/laramgr.swift` — إصلاحات
+- **ytProc**: إزالة initialization مبكر غير ضروري لـ `RemoteCall`.
+- **Encoding**: إصلاح مشكلة ترميز UTF-8 في التعليقات.
+
+### 11) `lara/classes/OmegaBootstrap.swift` — أوامر جديدة
+- **أمر `health`**: يعرض درجة صحة الجلسة (0-100) من `ds_session_health_score()`.
+- **أمر `memstats`**: يعرض إحصائيات عمليات الذاكرة من `MemoryOperationTracker`.
+
+### 12) `.github/workflows/build.yml` — إصلاح CI/CD
+- **macos-latest**: تغيير `macos-15` إلى `macos-latest` (الـ runner المتاح).
+
+### 13) `lara/classes/MemorySafetyManager.swift` — تحسينات
+- **KernelAddressValidator**: تحسين التحقق من عناوين kernel مع دعم arm64.
+- **MemoryOperationTracker**: تتبع نسبة النجاح/الفشل مع throttling تلقائي.
+- **SafeKRW**: wrapper آمن حول عمليات KRW مع فحوصات صلاحية.
+
 ## ملاحظة
 هذا exploit قائم على UAF؛ الاستقرار المطلق 100% غير ممكن نظرياً، لكن هذه الإصلاحات
 تزيل سبب الموت المبكر المُدخَل أثناء تطوير الشيل وتعيد سلوك "الاستقرار الطويل".
