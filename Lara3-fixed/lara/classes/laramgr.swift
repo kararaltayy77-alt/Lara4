@@ -51,7 +51,7 @@ private func clearImmutableForOverwriteIfNeeded(path: String) -> String? {
 }
 
 final class laramgr: ObservableObject {
-      // Background task token â prevents 0x8BADF00D watchdog kill when app goes to background
+    // Background task token — prevents 0x8BADF00D watchdog kill when app goes to background
       private var _bgTask: UIBackgroundTaskIdentifier = .invalid
       @Published var showTerminal: Bool  = false
     @Published var log: String = ""
@@ -95,7 +95,7 @@ final class laramgr: ObservableObject {
     @Published var showLogs: Bool = false
     
     var sbProc: RemoteCall?
-    var ytProc = RemoteCall(process: "youtube", useMigFilterBypass: false)
+    var ytProc: RemoteCall?
     
     static let shared = laramgr()
     static let fontpath = "/System/Library/Fonts/Core/SFUI.ttf"
