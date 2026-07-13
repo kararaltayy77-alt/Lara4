@@ -14,11 +14,11 @@ import Darwin
 /// Validates kernel virtual addresses before access.
 enum KernelAddressValidator {
 
-    /// Minimum valid kernel virtual address (arm64)
-    static let kernelVABase: UInt64 = 0xFFFFFE0000000000
+    /// Minimum valid kernel virtual address (arm64 standard)
+    private static let kernelVABase: UInt64 = 0xFFFFFE0000000000
 
     /// Maximum valid kernel virtual address
-    static let kernelVALimit: UInt64 = 0xFFFFFFFFF0000000
+    private static let kernelVALimit: UInt64 = 0xFFFFFFFFF0000000
 
     /// Validates a kernel address.
     /// - Returns: true if the address appears to be a valid kernel VA
