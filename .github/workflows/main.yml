@@ -31,13 +31,13 @@ jobs:
         run: brew install ldid
 
       - name: build IPA
-        working-directory: lara3_full/Lara3-main
+        working-directory: Lara3-fixed
         run: |
           chmod +x ipabuild.sh
           ./ipabuild.sh
 
       - name: verify IPA
-        working-directory: lara3_full/Lara3-main
+        working-directory: Lara3-fixed
         run: |
           ls -lh build/lara.ipa
           unzip -p build/lara.ipa Payload/lara.app/lara > /tmp/lara_bin
@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log
-          path: lara3_full/Lara3-main/build/xcodebuild.log
+          path: Lara3-fixed/build/xcodebuild.log
           if-no-files-found: ignore
 
       - name: upload IPA
@@ -56,7 +56,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lara4-ipa
-          path: lara3_full/Lara3-main/build/lara.ipa
+          path: Lara3-fixed/build/lara.ipa
 
   release:
     if: github.event_name != 'pull_request'
