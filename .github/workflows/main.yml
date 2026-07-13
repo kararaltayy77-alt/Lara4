@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-latest
 
     steps:
       - name: checkout
@@ -39,11 +39,15 @@ jobs:
       - name: verify IPA
         working-directory: Lara3-fixed
         run: |
+          echo "[*] IPA size:"
           ls -lh build/lara.ipa
+          echo "[*] Payload contents:"
+          unzip -l build/lara.ipa | grep -E "\.app/|Frameworks/" | head -30
+          echo "[*] Entitlements in binary:"
           unzip -p build/lara.ipa Payload/lara.app/lara > /tmp/lara_bin
-          ldid -e /tmp/lara_bin | grep -E "no-sandbox|proc_info|platform-application" || true
+          ldid -e /tmp/lara_bin || true
 
-      - name: upload xcodebuild log
+      - name: upload xcodebuild log (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -51,11 +55,11 @@ jobs:
           path: Lara3-fixed/build/xcodebuild.log
           if-no-files-found: ignore
 
-      - name: upload IPA
+      - name: upload release IPA
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: lara4-ipa
+          name: release-ipa
           path: Lara3-fixed/build/lara.ipa
 
   release:
@@ -72,18 +76,30 @@ jobs:
       - name: download IPA
         uses: actions/download-artifact@v4
         with:
-          name: lara4-ipa
+          name: release-ipa
           path: build/
+
+      - name: get recent commits
+        run: |
+          COMMITS=$(git log --since='24 hours ago' --pretty=format:'- %h %s (%an)')
+          if [ -z "$COMMITS" ]; then
+            COMMITS=$(git log -5 --pretty=format:'- %h %s (%an)')
+          fi
+          echo "COMMITS<<EOF" >> $GITHUB_ENV
+          echo "$COMMITS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
       - name: update nightly release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          COMMITS=$(git log -5 --pretty=format:'- %h %s (%an)')
           gh release view nightly >/dev/null 2>&1 || \
-            gh release create nightly --title 'Nightly' --notes 'nightly' --prerelease
+            gh release create nightly \
+              --title 'Nightly' \
+              --notes 'nightly build' \
+              --prerelease
           gh release edit nightly \
             --title "Nightly ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
-            --notes "$(printf '## Lara4 Nightly\n\n%s' "$COMMITS")" \
+            --notes "$(printf '## lara nightly\n\n**ProcessLayer:** VALID/PARTIAL/DEGRADED/INVALID quality tiers\n**Entitlements:** no-sandbox + proc_info-allow embedded via ldid\n\n### Recent commits\n%s' "$COMMITS")" \
             --prerelease
           gh release upload nightly build/lara.ipa --clobber
