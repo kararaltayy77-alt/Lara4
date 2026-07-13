@@ -111,6 +111,13 @@ struct lara: App {
             }
             .onChange(of: scenephase, perform: handleScenePhase)
             
+              .onChange(of: mgr.dsready) { ready in
+                  if ready {
+                      startHealthCheckTimer()
+                  } else {
+                      stopHealthCheckTimer()
+                  }
+              }
               .onChange(of: mgr.sbxready) { ready in
                   if ready {
                       iconthememgr.startPendingFixupIfPossible()
@@ -124,10 +131,12 @@ struct lara: App {
         case .inactive, .background:
             handlebg()
             globallogger.stopcapture()
+            stopHealthCheckTimer()  // Stop timer to prevent background crashes
 
         case .active:
             globallogger.capture()
             iconthememgr.startPendingFixupIfPossible()
+            startHealthCheckTimer()  // Resume timer when app becomes active
 
         @unknown default:
             break
@@ -197,5 +206,9 @@ extension UIDocumentPickerViewController {
     }
 }
 
-// make strings compatiable with errors
+// make strings compatible with errors
+#if swift(>=6.0)
 extension String: @retroactive Error {}
+#else
+extension String: Error {}
+#endif
