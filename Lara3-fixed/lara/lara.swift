@@ -19,6 +19,7 @@ var weonadebugbuild_pjbweouttahereexclamationmark: Bool = false
 struct lara: App {
     @StateObject private var mgr = laramgr.shared
     @StateObject private var iconthememgr = IconThemeManager.shared
+    @State private var healthCheckTimer: Timer? = nil
     @Environment(\.scenePhase) var scenephase
     @AppStorage("selectedMethod") private var selectedMethod: method = .hybrid
     @AppStorage("keepAlive") private var keepalive: Bool = false
@@ -96,6 +97,7 @@ struct lara: App {
                 IconThemeFixupView()
             }
             .onAppear {
+                startHealthCheckTimer()
                 if !isunsupported() {
                     init_offsets()
                     offsets_init()
@@ -130,6 +132,29 @@ struct lara: App {
         @unknown default:
             break
         }
+    }
+
+    // MARK: ── Session Health Check Timer ─────────────────────────────────────
+    // Periodic health check every 30 seconds to catch degradation early
+
+    private func startHealthCheckTimer() {
+        stopHealthCheckTimer()
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
+            guard laramgr.shared.dsready else { return }
+            let health = ds_session_health_score()
+            if health < 50 && health > 0 {
+                laramgr.shared.logmsg("(health) KRW health low: \(health)/100 — attempting auto-revive")
+                let revived = laramgr.shared.reviveKRW()
+                if !revived {
+                    laramgr.shared.logmsg("(health) auto-revive failed — session needs manual re-exploit")
+                }
+            }
+        }
+    }
+
+    private func stopHealthCheckTimer() {
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
     }
 
     private func handlebg() {
