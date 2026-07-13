@@ -34,7 +34,14 @@ jobs:
         working-directory: Lara3-fixed
         run: |
           chmod +x ipabuild.sh
-          ./ipabuild.sh
+          ./ipabuild.sh || {
+            echo "=== BUILD FAILED ==="
+            if [ -f build/xcodebuild.log ]; then
+              echo "=== Last 200 lines of xcodebuild.log ==="
+              tail -200 build/xcodebuild.log
+            fi
+            exit 1
+          }
 
       - name: verify IPA
         working-directory: Lara3-fixed
@@ -81,7 +88,7 @@ jobs:
 
       - name: get recent commits
         run: |
-          COMMITS=$(git log --since='24 hours ago' --pretty=format:'- %h %s (%an)')
+          COMMITS=$(git log -5 --pretty=format:'- %h %s (%an)')
           if [ -z "$COMMITS" ]; then
             COMMITS=$(git log -5 --pretty=format:'- %h %s (%an)')
           fi
