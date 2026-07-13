@@ -242,6 +242,8 @@ LARA Shell — full command reference (iSH-level access)
   entitlements                 dump our own entitlements
 
   ── LARA ─────────────────────────────────────────────────
+  health                       KRW session health score (0-100)
+  memstats                     memory operation statistics
   status                       subsystem status summary
   run                          trigger DarkSword exploit
   vfs                          initialize VFS
@@ -317,6 +319,26 @@ LARA Shell — full command reference (iSH-level access)
 
         OmegaCore.register("hostname") { _, _ in
             return .ok(ProcessInfo.processInfo.hostName)
+        }
+
+        // MARK: ── Session Health Commands ─────────────────────────────────────
+
+        OmegaCore.register("health") { _, _ in
+            let score = ds_session_health_score()
+            let status: String
+            switch score {
+            case 100: status = "PERFECT"
+            case 85...99: status = "HEALTHY"
+            case 60...84: status = "DEGRADED"
+            case 30...59: status = "WARNING"
+            case 1...29: status = "CRITICAL"
+            default: status = "NOT READY"
+            }
+            return .ok("KRW Health Score: \(score)/100 — \(status)")
+        }
+
+        OmegaCore.register("memstats") { _, _ in
+            return .ok(MemoryOperationTracker.shared.stats)
         }
 
         OmegaCore.register("ps") { arg, _ in
