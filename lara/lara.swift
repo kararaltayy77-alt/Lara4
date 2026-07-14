@@ -156,11 +156,17 @@ struct lara: App {
             handlebg()
             globallogger.stopcapture()
             stopHealthCheckTimer()
+            // FIX 6: Tell laramgr to stop its health timer — prevents ds_revive()
+            // from firing socket() syscalls while the app is suspended.
+            mgr.handleEnterBackground()
 
         case .active:
             globallogger.capture()
             iconthememgr.startPendingFixupIfPossible()
             startHealthCheckTimer()
+            // FIX 6: Notify laramgr of foreground return — restarts health timer
+            // and warns user if KRW session was lost while suspended.
+            mgr.handleEnterForeground()
 
         @unknown default:
             break
