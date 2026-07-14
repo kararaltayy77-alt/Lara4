@@ -15,15 +15,15 @@ workflows:
         xcode: latest
 
       scripts:
-        - name: Install ldid
+        - name: install ldid
           script: brew install ldid
 
-        - name: Build IPA
+        - name: build IPA
           script: |
             chmod +x ipabuild.sh
             ./ipabuild.sh
 
-        - name: Verify IPA
+        - name: verify IPA
           script: |
             echo "[*] IPA size:"
             ls -lh build/lara.ipa
@@ -42,3 +42,4 @@ workflows:
           prerelease: true
           artifact_patterns:
             - build/lara.ipa
+  
