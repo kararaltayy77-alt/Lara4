@@ -218,37 +218,71 @@ final class laramgr: ObservableObject {
     /// 3-stage recovery: quick check → health score → retry with delay.
     /// Returns true if the primitive is healthy (or was revived).
     @discardableResult
-    func reviveKRW() -> Bool {
-        guard dsready else { return false }
+        // MARK: - Session Health (FIX 6)
+      // FIX 6: Invalidate health timer when app enters background — prevents
+      // ds_revive() socket() syscalls while suspended (kernel rejects them →
+      // g_socket_broken=1 → session dead on foreground return).
+      private var _healthTimer: Timer?
+      private var _isInBackground: Bool = false
 
-        // Stage 1: Quick fd + corruption check
-        let ok = ds_revive()
-        if ok {
-            logmsg("(krw) session healthy — revived")
-            return true
-        }
+      func handleEnterBackground() {
+          _isInBackground = true
+          _healthTimer?.invalidate()
+          _healthTimer = nil
+          logmsg("(bg) health timer stopped — no KRW ops while suspended")
+      }
 
-        // Stage 2: Check health score for partial degradation
-        logmsg("(krw) quick revive failed — checking health score...")
-        let health = ds_session_health_score()
-        logmsg("(krw) health score: \(health)/100")
+      func handleEnterForeground() {
+          _isInBackground = false
+          if ds_is_ready() {
+              startHealthTimer()
+              logmsg("(fg) session valid — health timer restarted")
+          } else {
+              logmsg("(fg) WARNING: KRW session lost in background — re-exploit required")
+              DispatchQueue.main.async { [weak self] in
+                  self?.dsready = false
+                  self?.dsfailed = true
+              }
+          }
+      }
 
-        if health > 0 {
-            // fd alive but corruption degraded — wait and retry
-            logmsg("(krw) attempting delayed retry (500ms)...")
-            usleep(500_000)
-            let retryOk = ds_revive()
-            if retryOk {
-                logmsg("(krw) recovered after delayed retry")
-                return true
-            }
-        }
+      func startHealthTimer() {
+          _healthTimer?.invalidate()
+          _healthTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+              guard let self = self, !self._isInBackground else { return }
+              if !ds_is_ready() {
+                  self.logmsg("(health) KRW session degraded — manual re-exploit required")
+                  DispatchQueue.main.async { self.dsready = false }
+              }
+          }
+      }
 
-        logmsg("(krw) session unrecoverable — needs re-exploit")
-        return false
-    }
+      func reviveKRW() -> Bool {
+          guard dsattempted else {
+              logmsg("(revive) no previous exploit attempt")
+              return false
+          }
+          // FIX 5+6: Full re-exploit (Fail Fast, Rebuild Clean).
+          // Cheap revive with stale fds → write to wrong kaddr → DATA_ABORT/DOUBLE_FREE.
+          logmsg("(revive) starting full re-exploit (Fail Fast, Rebuild Clean)...")
+          _healthTimer?.invalidate()
+          _healthTimer = nil
+          let revived = ds_revive()
+          if revived {
+              dsready  = true
+              dsfailed = false
+              logmsg("(revive) full re-exploit successful — new KRW session active")
+              globallogger.log("(revive) re-exploit OK")
+              startHealthTimer()
+          } else {
+              logmsg("(revive) full re-exploit FAILED — device may need reboot")
+              dsready  = false
+              dsfailed = true
+          }
+          return revived
+      }
 
-    /// Automatic session health check with recovery attempt.
+      /// Automatic session health check with recovery attempt.
     /// Call this periodically (e.g., every 30 seconds) from a timer.
     @discardableResult
     func autoHealthCheck() -> Bool {
