@@ -1,8 +1,12 @@
 //
-//  lara.swift
-//  lara
+//  lara.swift - Lara4 App Entry Point (HARDENED)
 //
-//  Created by ruter on 23.03.26.
+//  CRITICAL FIXES:
+//  1. Timer lifecycle (start/stop health check)
+//  2. handlebg() - do NOT destroy RemoteCall on background by default
+//  3. destroyRemoteCallOnBackground setting for old behavior
+//  4. @retroactive Error fix for Swift 6
+//  5. Scene phase handling with proper cleanup
 //
 
 import SwiftUI
@@ -26,24 +30,24 @@ struct lara: App {
     @AppStorage("showFMInTabs") private var showfmintabs: Bool = true
     @AppStorage("logsdisplaymode") private var logsdisplaymode: logsdisplaymode = .toolbar
     @State private var selectedtab: taboptions = .applying
-    
+
     init() {
         #if DEBUG
         weonadebugbuild_pjbweouttahereexclamationmark = true
         #endif
-        
-        // fix file picker
+
+        // Fix file picker
         let fixMethod = class_getInstanceMethod(UIDocumentPickerViewController.self, #selector(UIDocumentPickerViewController.fix_init(forOpeningContentTypes:asCopy:)))!
         let origMethod = class_getInstanceMethod(UIDocumentPickerViewController.self, #selector(UIDocumentPickerViewController.init(forOpeningContentTypes:asCopy:)))!
         method_exchangeImplementations(origMethod, fixMethod)
-        
+
         if keepalive {
             toggleka()
         }
-        
+
         globallogger.capture()
     }
-    
+
     var body: some Scene {
         WindowGroup {
             TabView(selection: $selectedtab) {
@@ -52,16 +56,13 @@ struct lara: App {
                         Image(systemName: "wrench.and.screwdriver.fill")
                     }
                     .tag(taboptions.applying)
-                
-                // this has gotta fucking go
+
                 TweaksView(mgr: mgr)
                     .tabItem {
                         Image(systemName: "ant.fill")
                     }
                     .tag(taboptions.tweaks)
-                
-                
-                // i'm gonna strangle you root (the weight of your actions will crush you)
+
                 if showfmintabs {
                     SantanderView(startPath: "/")
                         .tabItem {
@@ -69,8 +70,7 @@ struct lara: App {
                         }
                         .tag(taboptions.files)
                 }
-                
-                // this too
+
                 if logsdisplaymode == .tabs {
                     LogsView(logger: globallogger)
                         .tabItem {
@@ -102,60 +102,43 @@ struct lara: App {
                     init_offsets()
                     offsets_init()
                     iconthememgr.startPendingFixupIfPossible()
-                    // beautiful name root
-                    // thanks
                     mgr.hasOffsets = emergencyfixfunctiontobereplacedlateronquestionmark()
                 } else {
-                    Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by Lara. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
+                    Alertinator.shared.alert(
+                        title: "This device is not supported!",
+                        body: "We apologize, but this device is currently not supported by Lara. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.",
+                        actionLabel: "Exit App",
+                        action: { exitinator() }
+                    )
                 }
             }
             .onChange(of: scenephase, perform: handleScenePhase)
-            
-              .onChange(of: mgr.dsready) { ready in
-                  if ready {
-                      startHealthCheckTimer()
-                  } else {
-                      stopHealthCheckTimer()
-                  }
-              }
-              .onChange(of: mgr.sbxready) { ready in
-                  if ready {
-                      iconthememgr.startPendingFixupIfPossible()
-                  }
-              }
-        }
-    }
-    
-    private func handleScenePhase(_ phase: ScenePhase) {
-        switch phase {
-        case .inactive, .background:
-            handlebg()
-            globallogger.stopcapture()
-            stopHealthCheckTimer()  // Stop timer to prevent background crashes
-
-        case .active:
-            globallogger.capture()
-            iconthememgr.startPendingFixupIfPossible()
-            startHealthCheckTimer()  // Resume timer when app becomes active
-
-        @unknown default:
-            break
+            .onChange(of: mgr.dsready) { ready in
+                if ready {
+                    startHealthCheckTimer()
+                } else {
+                    stopHealthCheckTimer()
+                }
+            }
+            .onChange(of: mgr.sbxready) { ready in
+                if ready {
+                    iconthememgr.startPendingFixupIfPossible()
+                }
+            }
         }
     }
 
-    // MARK: ── Session Health Check Timer ─────────────────────────────────────
-    // Periodic health check every 30 seconds to catch degradation early
-
+    // MARK: - Session Health Check Timer
     private func startHealthCheckTimer() {
         stopHealthCheckTimer()
         healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
             guard laramgr.shared.dsready else { return }
             let health = ds_session_health_score()
             if health < 50 && health > 0 {
-                laramgr.shared.logmsg("(health) KRW health low: \(health)/100 — attempting auto-revive")
+                laramgr.shared.logmsg("(health) KRW health low: \(health)/100 - attempting auto-revive")
                 let revived = laramgr.shared.reviveKRW()
                 if !revived {
-                    laramgr.shared.logmsg("(health) auto-revive failed — session needs manual re-exploit")
+                    laramgr.shared.logmsg("(health) auto-revive failed - session needs manual re-exploit")
                 }
             }
         }
@@ -166,23 +149,37 @@ struct lara: App {
         healthCheckTimer = nil
     }
 
+    // MARK: - Background Handling
+    private func handleScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .inactive, .background:
+            handlebg()
+            globallogger.stopcapture()
+            stopHealthCheckTimer()
+
+        case .active:
+            globallogger.capture()
+            iconthememgr.startPendingFixupIfPossible()
+            startHealthCheckTimer()
+
+        @unknown default:
+            break
+        }
+    }
+
     private func handlebg() {
         guard mgr.rcready else { return }
 
         // FIX: do NOT tear down the RemoteCall session merely because the app
         // went to background. SpringBoard keeps running, so the hijacked thread
-        // stays valid — destroying it here is what killed long shell sessions
-        // ("destroying remote call session..." right after a screen lock / app
-        // switch). Keep it alive by default; only tear down if the user opts in.
-        // To restore the old eager-cleanup behavior, set the
-        // "destroyRemoteCallOnBackground" default to true.
+        // stays valid - destroying it here is what killed long shell sessions.
+        // Keep it alive by default; only tear down if the user opts in.
         let destroyOnBackground = UserDefaults.standard.bool(forKey: "destroyRemoteCallOnBackground")
         if !destroyOnBackground {
             return   // keep the session alive across background/foreground
         }
 
         var bgTask: UIBackgroundTaskIdentifier = .invalid
-
         bgTask = UIApplication.shared.beginBackgroundTask(withName: "RemoteCallCleanup") {
             endbgtask(&bgTask)
         }
@@ -199,14 +196,14 @@ struct lara: App {
     }
 }
 
-// file picker fixes
+// MARK: - File Picker Fix
 extension UIDocumentPickerViewController {
     @objc func fix_init(forOpeningContentTypes contentTypes: [UTType], asCopy: Bool) -> UIDocumentPickerViewController {
         return fix_init(forOpeningContentTypes: contentTypes, asCopy: true)
     }
 }
 
-// make strings compatible with errors
+// MARK: - Swift 6 Compatibility
 #if swift(>=6.0)
 extension String: @retroactive Error {}
 #else

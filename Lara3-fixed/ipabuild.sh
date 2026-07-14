@@ -2,21 +2,24 @@
 set -eo pipefail
 cd "$(dirname "$0")"
 
+# Change to project directory
+cd Lara3-fixed
+
 APP="lara"
 SCHEME="lara"
 CONFIG="Release"
 ENTITLEMENTS="Config/lara.entitlements"
 DERIVED="build/DerivedData"
 
-# ─── دعم --debug ────────────────────────────────────────────────────────────
+# Support --debug flag
 if [[ "$*" == *--debug* ]]; then
     CONFIG="Debug"
 fi
 
-echo "[*] lara IPA build — config=$CONFIG"
+echo "[*] lara IPA build - config=$CONFIG"
 echo "[*] entitlements: $ENTITLEMENTS"
 
-# ─── تحقق من ldid ───────────────────────────────────────────────────────────
+# Verify ldid is installed
 if ! command -v ldid >/dev/null 2>&1; then
     echo "[!] ldid not found. Install: brew install ldid" >&2
     exit 1
@@ -27,13 +30,10 @@ if [ ! -f "$ENTITLEMENTS" ]; then
     exit 1
 fi
 
-# ─── تنظيف ──────────────────────────────────────────────────────────────────
+# Clean build directory
 rm -rf build && mkdir -p build
 
-# ─── Build بدون code signing — ldid يتولى التوقيع بالكامل ───────────────────
-# ملاحظة: `set -e` + `pipefail` يوقفان السكربت فوراً إذا فشل xcodebuild، لذا
-# نعطّل errexit مؤقتاً حول الـ pipeline لنتمكن من قراءة رمز الخروج الحقيقي
-# ونطبع تشخيصاً مفيداً بدل الخروج الصامت.
+# Build without code signing - ldid handles signing completely
 set +e
 xcodebuild \
     -project "$APP.xcodeproj" \
@@ -56,15 +56,13 @@ if [ "$BUILD_STATUS" -ne 0 ] || ! grep -q "BUILD SUCCEEDED" build/xcodebuild.log
 fi
 echo "[✓] xcodebuild: BUILD SUCCEEDED"
 
-# ─── تحديد مسار الـ .app ────────────────────────────────────────────────────
+# Locate the .app bundle
 APP_PATH="$DERIVED/Build/Products/$CONFIG-iphoneos/$APP.app"
 if [ ! -d "$APP_PATH" ]; then
-    echo "[!] .app not found at expected path: $APP_PATH"
-    echo "[*] Searching inside DerivedData..."
+    echo "[*] .app not found at expected path, searching..."
     FOUND=$(find "$DERIVED" -name "$APP.app" -type d 2>/dev/null | head -1)
     if [ -z "$FOUND" ]; then
-        echo "[!] .app not found anywhere in DerivedData — build output:"
-        find "$DERIVED/Build/Products" -maxdepth 2 2>/dev/null || true
+        echo "[!] .app not found in DerivedData"
         exit 1
     fi
     echo "[*] Found at: $FOUND"
@@ -74,57 +72,53 @@ fi
 TARGET="build/$APP.app"
 cp -r "$APP_PATH" "$TARGET"
 
-# ─── التوقيع بـ ldid ──────────────────────────────────────────────────────────
+# Sign with ldid
 echo "[*] Removing old code signature..."
 codesign --remove "$TARGET" 2>/dev/null || true
 rm -rf "$TARGET/_CodeSignature" "$TARGET/embedded.mobileprovision" 2>/dev/null || true
 
-# توقيع الـ frameworks أولاً — dylibs قبل الـ main binary (إلزامي)
+# Sign frameworks first
 FW_DIR="$TARGET/Frameworks"
 if [ -d "$FW_DIR" ]; then
     for item in "$FW_DIR"/*; do
         [ -e "$item" ] || continue
         NAME=$(basename "$item")
         if [ -d "$item" ]; then
-            # .framework bundle — وقّع الـ binary الداخلي
             BIN="$item/${NAME%.framework}"
             if [ -f "$BIN" ]; then
-                echo "[*] Signing .framework binary: $NAME"
+                echo "[*] Signing framework: $NAME"
                 ldid -S "$BIN"
-            else
-                echo "[!] .framework binary not found: $BIN (skipping)"
             fi
         elif [ -f "$item" ]; then
-            # .dylib مباشرة
             echo "[*] Signing dylib: $NAME"
             ldid -S "$item"
         fi
     done
 fi
 
-# توقيع الـ binary الرئيسي مع الـ entitlements الكاملة للتطبيق
-echo "[*] Signing main binary with: $ENTITLEMENTS"
+# Sign main binary with entitlements
+echo "[*] Signing main binary with entitlements"
 ldid -S"$ENTITLEMENTS" "$TARGET/$APP"
 
-# التحقق من الـ entitlements المضمّنة — هذه الصلاحيات لازم تكون موجودة
+# Verify critical entitlements
 echo "[*] Verifying critical entitlements:"
 EMBEDDED=$(ldid -e "$TARGET/$APP" 2>/dev/null || true)
-MISSING_ENTITLEMENTS=0
+MISSING=0
 for key in "no-sandbox" "proc_info-allow" "platform-application"; do
     if echo "$EMBEDDED" | grep -q "$key"; then
         echo "    [✓] $key"
     else
-        echo "    [!] MISSING: $key — IPA will not work correctly"
-        MISSING_ENTITLEMENTS=1
+        echo "    [!] MISSING: $key"
+        MISSING=1
     fi
 done
 
-if [ "$MISSING_ENTITLEMENTS" -ne 0 ]; then
-    echo "[!] One or more critical entitlements are missing after signing — aborting."
+if [ "$MISSING" -ne 0 ]; then
+    echo "[!] Critical entitlements missing - aborting"
     exit 1
 fi
 
-# ─── تغليف IPA ──────────────────────────────────────────────────────────────
+# Package IPA
 echo "[*] Packaging IPA..."
 cd build
 mkdir -p Payload
@@ -137,8 +131,7 @@ zip -qr "$IPA_NAME" Payload
 rm -rf Payload
 cd ..
 
-# ─── ملخص نهائي ─────────────────────────────────────────────────────────────
 echo ""
-echo "[✓] Done"
+echo "[✓] Build Complete"
 echo "[✓] IPA: build/$IPA_NAME"
 ls -lh "build/$IPA_NAME"
