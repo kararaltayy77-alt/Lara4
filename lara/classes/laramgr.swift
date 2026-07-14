@@ -227,27 +227,77 @@ final class laramgr: ObservableObject {
 
     // MARK: - Session Revival (Cheap Recovery)
     @discardableResult
-    func reviveKRW() -> Bool {
-        guard dsattempted else {
-            logmsg("(revive) no previous exploit attempt")
-            return false
-        }
+    // MARK: - Session Health (FIX 6)
+      // FIX 6: Old code ran a health timer continuously into background.
+      // When iOS suspends the app (≥30s background), the timer still fires via the
+      // run loop, ds_revive() calls socket()/setsockopt() which the kernel rejects
+      // from a suspended process → g_socket_broken=1 → session dead on foreground.
+      // Fix: invalidate timer on background, restart on foreground return.
+      private var _healthTimer: Timer?
+      private var _isInBackground: Bool = false
 
-        logmsg("(revive) attempting cheap KRW recovery...")
-        let revived = ds_revive()
-        if revived {
-            dsready = true
-            dsfailed = false
-            logmsg("(revive) KRW session revived successfully")
-            globallogger.log("(revive) KRW session revived successfully")
-        } else {
-            logmsg("(revive) cheap recovery failed - session needs re-exploit")
-            dsready = false
-        }
-        return revived
-    }
+      func handleEnterBackground() {
+          _isInBackground = true
+          _healthTimer?.invalidate()
+          _healthTimer = nil
+          logmsg("(bg) health timer stopped — no KRW ops while suspended")
+      }
 
-    // MARK: - Full Re-exploit (when fd is dead)
+      func handleEnterForeground() {
+          _isInBackground = false
+          if ds_is_ready() {
+              startHealthTimer()
+              logmsg("(fg) session valid — health timer restarted")
+          } else {
+              logmsg("(fg) WARNING: KRW session lost in background — re-exploit required")
+              DispatchQueue.main.async { [weak self] in
+                  self?.dsready = false
+                  self?.dsfailed = true
+              }
+          }
+      }
+
+      func startHealthTimer() {
+          _healthTimer?.invalidate()
+          // 10s interval — lightweight check, no automatic revive (would be silent panic risk).
+          _healthTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+              guard let self = self, !self._isInBackground else { return }
+              if !ds_is_ready() {
+                  self.logmsg("(health) KRW session degraded — manual re-exploit required")
+                  DispatchQueue.main.async { self.dsready = false }
+              }
+          }
+      }
+
+      func reviveKRW() -> Bool {
+          guard dsattempted else {
+              logmsg("(revive) no previous exploit attempt")
+              return false
+          }
+
+          // FIX 5+6: Full re-exploit instead of cheap socket reuse (Fail Fast, Rebuild Clean).
+          // ds_revive() in darksword.m now calls ds_cleanup_state() + ds_run() — the ONLY
+          // safe recovery. Reusing a stale fd that points to a kfree'd kobject → DATA_ABORT.
+          logmsg("(revive) starting full re-exploit (Fail Fast, Rebuild Clean)...")
+          _healthTimer?.invalidate()
+          _healthTimer = nil
+
+          let revived = ds_revive()
+          if revived {
+              dsready  = true
+              dsfailed = false
+              logmsg("(revive) full re-exploit successful — new KRW session active")
+              globallogger.log("(revive) re-exploit OK")
+              startHealthTimer()
+          } else {
+              logmsg("(revive) full re-exploit FAILED — device may need reboot")
+              dsready  = false
+              dsfailed = true
+          }
+          return revived
+      }
+
+      // MARK: - Full Re-exploit (when fd is dead)
     func reexploit(completion: ((Bool) -> Void)? = nil) {
         guard !dsrunning else {
             logmsg("(reexploit) exploit already running")
