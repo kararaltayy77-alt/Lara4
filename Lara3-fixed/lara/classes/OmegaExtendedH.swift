@@ -7,30 +7,26 @@
 import Foundation
 import Darwin
 
-// MARK: – Socket Snapshot Store (for socket-diff)
+private struct SocketSnapshot: Codable {
+    let timestamp: Date
+    let data: Data
+}
 
 private final class SocketSnapshotStore {
     static let shared = SocketSnapshotStore()
-    private var store: [Int: (Date, Data)] = [:]
+    private var snapshots: [String: SocketSnapshot] = [:]
     private let lock = NSLock()
 
-    func save(fd: Int, data: Data) {
+    func save(pid: Int32, fd: Int, data: Data) {
         lock.lock(); defer { lock.unlock() }
-        store[fd] = (Date(), data)
+        snapshots["\(pid):\(fd)"] = SocketSnapshot(timestamp: Date(), data: data)
     }
-
-    func load(fd: Int) -> (Date, Data)? {
+    func load(pid: Int32, fd: Int) -> (Date, Data)? {
         lock.lock(); defer { lock.unlock() }
-        return store[fd]
-    }
-
-    func clear(fd: Int) {
-        lock.lock(); defer { lock.unlock() }
-        store.removeValue(forKey: fd)
+        guard let snap = snapshots["\(pid):\(fd)"] else { return nil }
+        return (snap.timestamp, snap.data)
     }
 }
-
-// MARK: – Helpers
 
 private func _kreadPtrH(_ addr: UInt64) -> UInt64 {
     guard addr != 0, ds_isvalid(addr) else { return 0 }
@@ -67,23 +63,14 @@ private func _kreadCStrH(_ addr: UInt64, max: Int = 64) -> String {
         if b == 0 { break }
         buf[i] = b
     }
-    let data = Data(buf.prefix(while: { $0 != 0 }))
-    return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) ?? ""
+    return String(cString: buf.withUnsafeBufferPointer { $0.baseAddress!.assumingMemoryBound(to: CChar.self) })
 }
 
-// MARK: – fd-info
+// MARK: – resolve proc by PID
 
-private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
-    guard mgr.dsready else { return nil }
-
+private func _resolveProcPtr(pid: Int32) -> UInt64? {
     let procPListLeNextOff = UInt64(off_proc_p_list_le_next)
     let procPPidOff = UInt64(off_proc_p_pid)
-    let procPFdOff = UInt64(off_proc_p_fd)
-    let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
-    let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
-    let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
-    let vnodeVUsecountOff = UInt64(off_vnode_v_usecount)
-    let vnodeVIocountOff = UInt64(off_vnode_v_iocount)
 
     let ourProc = ds_get_our_proc()
     guard ourProc != 0 else { return nil }
@@ -97,7 +84,22 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
         if p_pid == pid { procPtr = ptr; break }
         ptr = ds_kreadptr(ptr + procPListLeNextOff)
     }
-    guard procPtr != 0 else { return nil }
+    return procPtr != 0 ? procPtr : nil
+}
+
+// MARK: – fd-info
+
+private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
+    guard mgr.dsready else { return nil }
+
+    let procPFdOff = UInt64(off_proc_p_fd)
+    let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
+    let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
+    let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
+    let vnodeVUsecountOff = UInt64(off_vnode_v_usecount)
+    let vnodeVIocountOff = UInt64(off_vnode_v_iocount)
+
+    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
 
     let fdPtr = _kreadPtrH(procPtr + procPFdOff)
     guard fdPtr != 0 else { return nil }
@@ -128,7 +130,9 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     }
 
     var lines = [
+        String(format: "PID             : %d", pid),
         String(format: "FD              : %d", fd),
+        String(format: "proc            : 0x%016llx", procPtr),
         String(format: "fileproc        : 0x%016llx", fileprocPtr),
         String(format: "fileglob        : 0x%016llx", fileglobPtr),
         String(format: "fg_type         : %@", fg_typeStr),
@@ -138,39 +142,23 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     ]
     if fg_typeStr == "DTYPE_SOCKET" && fg_data != 0 {
         lines.append("")
-        lines.append("Socket structure detected — use 'socket-info <fd>' for full decode.")
+        lines.append("Socket structure detected — use 'socket-info <pid> <fd>' for full decode.")
     }
-    return lines.joined(separator: "\n")
+    return lines.joined(separator: "
+")
 }
 
 // MARK: – socket-info
 
-private func _socketInfo(fd: Int32, mgr: laramgr) -> String? {
+private func _socketInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     guard mgr.dsready else { return nil }
 
-    let procPListLeNextOff = UInt64(off_proc_p_list_le_next)
-    let procPPidOff = UInt64(off_proc_p_pid)
     let procPFdOff = UInt64(off_proc_p_fd)
     let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
     let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
     let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
-    let socketSoProtoOff = UInt64(off_socket_so_proto)
-    let socketSoUsecntOff = UInt64(off_socket_so_usecount)
 
-    let ourProc = ds_get_our_proc()
-    guard ourProc != 0 else { return nil }
-
-    var procPtr: UInt64 = 0
-    var ptr = ourProc
-    var seen = Set<UInt64>()
-    let pid = getpid()
-    while ptr != 0 && !seen.contains(ptr) {
-        seen.insert(ptr)
-        let p_pid = Int32(bitPattern: ds_kread32(ptr + procPPidOff))
-        if p_pid == pid { procPtr = ptr; break }
-        ptr = ds_kreadptr(ptr + procPListLeNextOff)
-    }
-    guard procPtr != 0 else { return nil }
+    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
 
     let fdPtr = _kreadPtrH(procPtr + procPFdOff)
     guard fdPtr != 0 else { return nil }
@@ -235,35 +223,21 @@ private func _socketInfoFromAddr(socketAddr: UInt64) -> String? {
         String(format: "so_rcv          : cc=%d hiwat=%d", so_rcv_cc, so_rcv_hiwat),
         String(format: "so_snd          : cc=%d hiwat=%d", so_snd_cc, so_snd_hiwat),
     ]
-    return lines.joined(separator: "\n")
+    return lines.joined(separator: "
+")
 }
 
 // MARK: – socket-dump
 
-private func _socketDump(fd: Int32, mgr: laramgr) -> String? {
+private func _socketDump(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     guard mgr.dsready else { return nil }
 
-    let procPListLeNextOff = UInt64(off_proc_p_list_le_next)
-    let procPPidOff = UInt64(off_proc_p_pid)
     let procPFdOff = UInt64(off_proc_p_fd)
     let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
     let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
     let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
 
-    let ourProc = ds_get_our_proc()
-    guard ourProc != 0 else { return nil }
-
-    var procPtr: UInt64 = 0
-    var ptr = ourProc
-    var seen = Set<UInt64>()
-    let pid = getpid()
-    while ptr != 0 && !seen.contains(ptr) {
-        seen.insert(ptr)
-        let p_pid = Int32(bitPattern: ds_kread32(ptr + procPPidOff))
-        if p_pid == pid { procPtr = ptr; break }
-        ptr = ds_kreadptr(ptr + procPListLeNextOff)
-    }
-    guard procPtr != 0 else { return nil }
+    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
 
     let fdPtr = _kreadPtrH(procPtr + procPFdOff)
     guard fdPtr != 0 else { return nil }
@@ -276,73 +250,30 @@ private func _socketDump(fd: Int32, mgr: laramgr) -> String? {
     let socketAddr = _kreadPtrH(fileglobPtr + fileglobFgDataOff)
     guard socketAddr != 0 else { return nil }
 
-    let dumpSize = 0x200
-    var lines = [String(format: "socket-dump @ 0x%016llx  (%d bytes)", socketAddr, dumpSize), ""]
-
-    let fieldMap: [UInt64: String] = [
-        0x00: "so_list.le_next", 0x08: "so_list.le_prev",
-        0x10: "so_type/so_family", 0x18: "so_state",
-        0x20: "so_pcb", 0x28: "so_proto",
-        0x30: "so_head", 0x38: "so_incomp",
-        0x40: "so_comp", 0x48: "so_qlen/so_qlimit",
-        0x50: "so_options", 0x58: "so_cred",
-        0x60: "so_label", 0x68: "so_gencnt",
-        0x70: "so_flags", 0x74: "so_usecount",
-        0x78: "so_retaincnt", 0x7C: "so_filter",
-        0x80: "so_rcv.sb_cc", 0x88: "so_rcv.sb_hiwat",
-        0x90: "so_rcv.sb_mbcnt", 0x98: "so_rcv.sb_mbmax",
-        0xA0: "so_rcv.sb_mtx", 0xA8: "so_rcv.sb_tstmp",
-        0xB0: "so_snd.sb_cc", 0xB8: "so_snd.sb_hiwat",
-        0xC0: "so_snd.sb_mbcnt", 0xC8: "so_snd.sb_mbmax",
-        0xD0: "so_snd lowat/flags", 0xD8: "so_snd.sb_sel",
-        0xE0: "so_snd.sb_mtx", 0xE8: "so_snd.sb_tstmp",
-        0xF0: "so_upcall/arg", 0xF8: "so_cred2",
-        0x100: "so_label2", 0x108: "so_gencnt2",
-        0x110: "so_flags2", 0x118: "so_usecount2",
-        0x120: "so_retaincnt2", 0x128: "so_filter2",
-        0x130: "so_kern_ctl", 0x138: "so_acc_sas",
-        0x140: "so_acc_sas_sz", 0x148: "so_ev_pcb",
-        0x150: "so_ev_pcbarg", 0x158: "so_ev_state",
-        0x160: "so_ev_rcvpending", 0x168: "so_traffic_mgt",
-        0x170: "so_netsvctype", 0x178: "so_resv",
-        0x180: "so_extended", 0x188: "so_waitq",
-        0x190: "so_waitq_link", 0x198: "so_zone",
-    ]
-
-    for off in stride(from: 0, to: dumpSize, by: 8) {
-        let val = _kread64H(socketAddr + UInt64(off))
-        let desc = fieldMap[UInt64(off)] ?? "field_0x\(String(format: "%03X", off))"
-        lines.append(String(format: "0x%03X  0x%016llx  %@", off, val, desc))
+    var lines: [String] = []
+    for off in stride(from: 0, to: 0x200, by: 16) {
+        var vals: [UInt64] = []
+        for j in 0..<2 {
+            vals.append(_kread64H(socketAddr + UInt64(off + j * 8)))
+        }
+        lines.append(String(format: "0x%03X: %016llx %016llx", off, vals[0], vals[1]))
     }
-    return lines.joined(separator: "\n")
+    return lines.joined(separator: "
+")
 }
 
-// MARK: – socket-save / socket-diff helpers
+// MARK: – get socket address helper
 
-private func _getSocketAddr(fd: Int, mgr: laramgr) -> UInt64? {
+private func _getSocketAddr(pid: Int32, fd: Int, mgr: laramgr) -> UInt64? {
     guard mgr.dsready else { return nil }
 
-    let procPListLeNextOff = UInt64(off_proc_p_list_le_next)
-    let procPPidOff = UInt64(off_proc_p_pid)
     let procPFdOff = UInt64(off_proc_p_fd)
     let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
     let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
     let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
 
-    let ourProc = ds_get_our_proc()
-    guard ourProc != 0 else { return nil }
+    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
 
-    var procPtr: UInt64 = 0
-    var ptr = ourProc
-    var seen = Set<UInt64>()
-    let pid = getpid()
-    while ptr != 0 && !seen.contains(ptr) {
-        seen.insert(ptr)
-        let p_pid = Int32(bitPattern: ds_kread32(ptr + procPPidOff))
-        if p_pid == pid { procPtr = ptr; break }
-        ptr = ds_kreadptr(ptr + procPListLeNextOff)
-    }
-    guard procPtr != 0 else { return nil }
     let fdPtr = _kreadPtrH(procPtr + procPFdOff)
     guard fdPtr != 0 else { return nil }
     let ofilesPtr = _kreadPtrH(fdPtr + filedescFdOfilesOff)
@@ -374,11 +305,14 @@ func registerKernelObjectExplorer() {
 
     OmegaCore.register("socket-info") { arg, mgr in
         guard mgr.dsready else { return .fail("socket-info: kernel r/w not ready") }
-        guard let fd = Int32(arg.trimmingCharacters(in: .whitespaces)) else {
-            return .fail("socket-info: usage — socket-info <fd>")
+        let parts = arg.split(separator: " ").map { String($0) }
+        guard parts.count >= 2,
+              let pid = _resolvePidH(parts[0]),
+              let fd = Int32(parts[1]) else {
+            return .fail("socket-info: usage — socket-info <pid|name> <fd>")
         }
-        guard let out = _socketInfo(fd: fd, mgr: mgr) else {
-            return .fail("socket-info: fd \(fd) is not a socket or not found")
+        guard let out = _socketInfo(pid: pid, fd: fd, mgr: mgr) else {
+            return .fail("socket-info: fd \(fd) is not a socket or not found for pid \(pid)")
         }
         return .ok(out)
     }
@@ -396,42 +330,51 @@ func registerKernelObjectExplorer() {
 
     OmegaCore.register("socket-dump") { arg, mgr in
         guard mgr.dsready else { return .fail("socket-dump: kernel r/w not ready") }
-        guard let fd = Int32(arg.trimmingCharacters(in: .whitespaces)) else {
-            return .fail("socket-dump: usage — socket-dump <fd>")
+        let parts = arg.split(separator: " ").map { String($0) }
+        guard parts.count >= 2,
+              let pid = _resolvePidH(parts[0]),
+              let fd = Int32(parts[1]) else {
+            return .fail("socket-dump: usage — socket-dump <pid|name> <fd>")
         }
-        guard let out = _socketDump(fd: fd, mgr: mgr) else {
-            return .fail("socket-dump: fd \(fd) is not a socket or not found")
+        guard let out = _socketDump(pid: pid, fd: fd, mgr: mgr) else {
+            return .fail("socket-dump: fd \(fd) is not a socket or not found for pid \(pid)")
         }
         return .ok(out)
     }
 
     OmegaCore.register("socket-save") { arg, mgr in
         guard mgr.dsready else { return .fail("socket-save: kernel r/w not ready") }
-        guard let fd = Int(arg.trimmingCharacters(in: .whitespaces)) else {
-            return .fail("socket-save: usage — socket-save <fd>")
+        let parts = arg.split(separator: " ").map { String($0) }
+        guard parts.count >= 2,
+              let pid = _resolvePidH(parts[0]),
+              let fd = Int(parts[1]) else {
+            return .fail("socket-save: usage — socket-save <pid|name> <fd>")
         }
-        guard let socketAddr = _getSocketAddr(fd: fd, mgr: mgr), socketAddr != 0 else {
-            return .fail("socket-save: fd \(fd) is not a socket")
+        guard let socketAddr = _getSocketAddr(pid: pid, fd: fd, mgr: mgr), socketAddr != 0 else {
+            return .fail("socket-save: fd \(fd) is not a socket for pid \(pid)")
         }
         var data = Data()
         for off in stride(from: 0, to: 0x200, by: 8) {
             var val = _kread64H(socketAddr + UInt64(off))
             data.append(Data(bytes: &val, count: 8))
         }
-        SocketSnapshotStore.shared.save(fd: fd, data: data)
-        return .ok(String(format: "socket-save: fd=%d  socket@0x%llx  saved %d bytes", fd, socketAddr, data.count))
+        SocketSnapshotStore.shared.save(pid: pid, fd: fd, data: data)
+        return .ok(String(format: "socket-save: pid=%d fd=%d  socket@0x%llx  saved %d bytes", pid, fd, socketAddr, data.count))
     }
 
     OmegaCore.register("socket-diff") { arg, mgr in
         guard mgr.dsready else { return .fail("socket-diff: kernel r/w not ready") }
-        guard let fd = Int(arg.trimmingCharacters(in: .whitespaces)) else {
-            return .fail("socket-diff: usage — socket-diff <fd>")
+        let parts = arg.split(separator: " ").map { String($0) }
+        guard parts.count >= 2,
+              let pid = _resolvePidH(parts[0]),
+              let fd = Int(parts[1]) else {
+            return .fail("socket-diff: usage — socket-diff <pid|name> <fd>")
         }
-        guard let (timestamp, before) = SocketSnapshotStore.shared.load(fd: fd) else {
-            return .fail("socket-diff: no snapshot for fd \(fd). Run 'socket-save <fd>' first.")
+        guard let (timestamp, before) = SocketSnapshotStore.shared.load(pid: pid, fd: fd) else {
+            return .fail("socket-diff: no snapshot for pid=\(pid) fd=\(fd). Run 'socket-save <pid> <fd>' first.")
         }
-        guard let socketAddr = _getSocketAddr(fd: fd, mgr: mgr), socketAddr != 0 else {
-            return .fail("socket-diff: fd \(fd) is not a socket")
+        guard let socketAddr = _getSocketAddr(pid: pid, fd: fd, mgr: mgr), socketAddr != 0 else {
+            return .fail("socket-diff: fd \(fd) is not a socket for pid \(pid)")
         }
         var after = Data()
         for off in stride(from: 0, to: 0x200, by: 8) {
@@ -448,10 +391,10 @@ func registerKernelObjectExplorer() {
             if b != a { diffs.append((i, b, a)) }
         }
         if diffs.isEmpty {
-            return .ok("socket-diff: fd=\(fd)  no changes since \(timestamp)")
+            return .ok("socket-diff: pid=\(pid) fd=\(fd)  no changes since \(timestamp)")
         }
         var lines = [
-            String(format: "socket-diff: fd=%d  socket@0x%llx", fd, socketAddr),
+            String(format: "socket-diff: pid=%d fd=%d  socket@0x%llx", pid, fd, socketAddr),
             "  saved: \(timestamp)",
             "  changed offsets: \(diffs.count)", ""
         ]
@@ -461,6 +404,7 @@ func registerKernelObjectExplorer() {
             lines.append(String(format: "  after : 0x%016llx", a))
             lines.append("")
         }
-        return .ok(lines.joined(separator: "\n"))
+        return .ok(lines.joined(separator: "
+"))
     }
 }
