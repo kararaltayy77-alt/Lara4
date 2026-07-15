@@ -63,7 +63,9 @@ private func _kreadCStrH(_ addr: UInt64, max: Int = 64) -> String {
         if b == 0 { break }
         buf[i] = b
     }
-    return String(cString: buf.withUnsafeBufferPointer { $0.baseAddress!.assumingMemoryBound(to: CChar.self) })
+    return String(cString: buf.withUnsafeBufferPointer { ptr in
+        ptr.baseAddress!.withMemoryRebound(to: CChar.self, capacity: max + 1) { $0 }
+    })
 }
 
 // MARK: – resolve proc by PID
