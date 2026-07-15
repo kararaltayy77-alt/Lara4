@@ -29,6 +29,11 @@ private func _kread32J(_ addr: UInt64) -> UInt32 {
 }
 
 private func _parseAddrJ(_ s: String) -> UInt64? {
+    let t = s.trimmingCharacters(in: .whitespaces)
+    let c = (t.hasPrefix("0x") || t.hasPrefix("0X")) ? String(t.dropFirst(2)) : t
+    return UInt64(c, radix: 16)
+}
+
 private func _ipcSpace(pid: Int32, mgr: laramgr) -> String? {
     guard mgr.dsready else { return nil }
     let ourProc = ds_get_our_proc()
