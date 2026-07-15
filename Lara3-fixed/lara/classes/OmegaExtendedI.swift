@@ -53,9 +53,9 @@ private func _findProcI(pid: Int32, mgr: laramgr) -> UInt64? {
     var seen = Set<UInt64>()
     while ptr != 0 && !seen.contains(ptr) {
         seen.insert(ptr)
-        let p_pid = Int32(bitPattern: ds_kread32(ptr + UInt32(off_proc_p_pid)))
+        let p_pid = Int32(bitPattern: ds_kread32(ptr + UInt64(numericCast(off_proc_p_pid))))
         if p_pid == pid { return ptr }
-        ptr = ds_kreadptr(ptr + UInt32(off_proc_p_list_le_next))
+        ptr = ds_kreadptr(ptr + UInt64(numericCast(off_proc_p_list_le_next)))
     }
     return nil
 }
@@ -64,14 +64,14 @@ private func _findProcI(pid: Int32, mgr: laramgr) -> UInt64? {
 
 private func _taskInfo(pid: Int32, mgr: laramgr) -> String? {
     guard let procPtr = _findProcI(pid: pid, mgr: mgr) else { return nil }
-    let procRo = _kreadPtrI(procPtr + UInt64(off_proc_p_proc_ro))
-    let taskPtr = _kreadPtrI(procRo + UInt64(off_proc_ro_pr_task))
+    let procRo = _kreadPtrI(procPtr + UInt64(numericCast(off_proc_p_proc_ro)))
+    let taskPtr = _kreadPtrI(procRo + UInt64(numericCast(off_proc_ro_pr_task)))
     guard taskPtr != 0 else { return nil }
 
-    let vmMap = _kreadPtrI(taskPtr + UInt64(off_task_map))
-    let itkSpace = _kreadPtrI(taskPtr + UInt64(off_task_itk_space))
-    let threadsNext = _kreadPtrI(taskPtr + UInt64(off_task_threads_next))
-    let excGuard = _kread32I(taskPtr + UInt64(off_task_task_exc_guard))
+    let vmMap = _kreadPtrI(taskPtr + UInt64(numericCast(off_task_map)))
+    let itkSpace = _kreadPtrI(taskPtr + UInt64(numericCast(off_task_itk_space)))
+    let threadsNext = _kreadPtrI(taskPtr + UInt64(numericCast(off_task_threads_next)))
+    let excGuard = _kread32I(taskPtr + UInt64(numericCast(off_task_task_exc_guard)))
 
     var threadCount = 0
     var threadPtr = threadsNext
@@ -79,7 +79,7 @@ private func _taskInfo(pid: Int32, mgr: laramgr) -> String? {
     while threadPtr != 0 && !threadSeen.contains(threadPtr) && threadCount < 1024 {
         threadSeen.insert(threadPtr)
         threadCount += 1
-        threadPtr = ds_kreadptr(threadPtr + UInt32(off_thread_task_threads_next))
+        threadPtr = ds_kreadptr(threadPtr + UInt64(numericCast(off_thread_task_threads_next)))
     }
     let taskRefcount = _kread32I(taskPtr + 0x10)
 
@@ -99,12 +99,12 @@ private func _taskInfo(pid: Int32, mgr: laramgr) -> String? {
         var idx = 0
         while threadPtr != 0 && !threadSeen.contains(threadPtr) && idx < 8 {
             threadSeen.insert(threadPtr)
-            let tid = _kread64I(threadPtr + UInt64(off_thread_ctid))
+            let tid = _kread64I(threadPtr + UInt64(numericCast(off_thread_ctid)))
             let state = _kread32I(threadPtr + 0x14)
-            let kstack = _kreadPtrI(threadPtr + UInt64(off_thread_machine_kstackptr))
+            let kstack = _kreadPtrI(threadPtr + UInt64(numericCast(off_thread_machine_kstackptr)))
             lines.append(String(format: "  [%d] thread@0x%llx  tid=%llu  state=0x%x  kstack=0x%llx",
                               idx, threadPtr, tid, state, kstack))
-            threadPtr = ds_kreadptr(threadPtr + UInt32(off_thread_task_threads_next))
+            threadPtr = ds_kreadptr(threadPtr + UInt64(numericCast(off_thread_task_threads_next)))
             idx += 1
         }
     }
@@ -115,8 +115,8 @@ private func _taskInfo(pid: Int32, mgr: laramgr) -> String? {
 
 private func _ucredInfo(pid: Int32, mgr: laramgr) -> String? {
     guard let procPtr = _findProcI(pid: pid, mgr: mgr) else { return nil }
-    let procRo = _kreadPtrI(procPtr + UInt64(off_proc_p_proc_ro))
-    let ucredPtr = _kreadPtrI(procRo + UInt64(off_proc_ro_p_ucred))
+    let procRo = _kreadPtrI(procPtr + UInt64(numericCast(off_proc_p_proc_ro)))
+    let ucredPtr = _kreadPtrI(procRo + UInt64(numericCast(off_proc_ro_p_ucred)))
     guard ucredPtr != 0 else { return nil }
 
     let cr_uid = _kread32I(ucredPtr + 0x18)
@@ -125,11 +125,11 @@ private func _ucredInfo(pid: Int32, mgr: laramgr) -> String? {
     let cr_rgid = _kread32I(ucredPtr + 0x24)
     let cr_svgid = _kread32I(ucredPtr + 0x28)
     let cr_ngroups = _kread32I(ucredPtr + 0x2C)
-    let cr_label = _kreadPtrI(ucredPtr + UInt64(off_ucred_cr_label))
+    let cr_label = _kreadPtrI(ucredPtr + UInt64(numericCast(off_ucred_cr_label)))
 
     var sandboxStr = "none"
     if cr_label != 0 {
-        let sbPtr = _kreadPtrI(cr_label + UInt64(off_label_l_perpolicy_sandbox))
+        let sbPtr = _kreadPtrI(cr_label + UInt64(numericCast(off_label_l_perpolicy_sandbox)))
         if sbPtr != 0 {
             sandboxStr = _kreadCStrI(sbPtr + 0x10, max: 64)
             if sandboxStr.isEmpty { sandboxStr = "present (unknown name)" }
@@ -138,7 +138,7 @@ private func _ucredInfo(pid: Int32, mgr: laramgr) -> String? {
 
     var amfiStr = "none"
     if cr_label != 0 {
-        let amfiPtr = _kreadPtrI(cr_label + UInt64(off_label_l_perpolicy_amfi))
+        let amfiPtr = _kreadPtrI(cr_label + UInt64(numericCast(off_label_l_perpolicy_amfi)))
         if amfiPtr != 0 { amfiStr = "present" }
     }
 
@@ -147,7 +147,7 @@ private func _ucredInfo(pid: Int32, mgr: laramgr) -> String? {
         groups.append(_kread32I(ucredPtr + 0x30 + UInt64(i) * 4))
     }
 
-    let textvp = _kreadPtrI(procPtr + UInt64(off_proc_p_textvp))
+    let textvp = _kreadPtrI(procPtr + UInt64(numericCast(off_proc_p_textvp)))
     let entStr = textvp != 0 ? "use 'proc-entitlements <pid>' for full dump" : "unavailable"
 
     let lines = [
@@ -172,14 +172,14 @@ private func _ucredInfo(pid: Int32, mgr: laramgr) -> String? {
 
 private func _vmmapK(pid: Int32, mgr: laramgr) -> String? {
     guard let procPtr = _findProcI(pid: pid, mgr: mgr) else { return nil }
-    let procRo = _kreadPtrI(procPtr + UInt64(off_proc_p_proc_ro))
-    let taskPtr = _kreadPtrI(procRo + UInt64(off_proc_ro_pr_task))
+    let procRo = _kreadPtrI(procPtr + UInt64(numericCast(off_proc_p_proc_ro)))
+    let taskPtr = _kreadPtrI(procRo + UInt64(numericCast(off_proc_ro_pr_task)))
     guard taskPtr != 0 else { return nil }
-    let vmMapPtr = _kreadPtrI(taskPtr + UInt64(off_task_map))
+    let vmMapPtr = _kreadPtrI(taskPtr + UInt64(numericCast(off_task_map)))
     guard vmMapPtr != 0 else { return nil }
 
-    let hdrPtr = vmMapPtr + UInt64(off_vm_map_hdr)
-    let nentries = _kread32I(hdrPtr + UInt64(off_vm_map_header_nentries))
+    let hdrPtr = vmMapPtr + UInt64(numericCast(off_vm_map_hdr))
+    let nentries = _kread32I(hdrPtr + UInt64(numericCast(off_vm_map_header_nentries)))
 
     var lines = [
         String(format: "vmmap-k: pid %d  vm_map@0x%llx", pid, vmMapPtr),
@@ -190,7 +190,7 @@ private func _vmmapK(pid: Int32, mgr: laramgr) -> String? {
         String(repeating: "-", count: 90)
     ]
 
-    let firstEntry = _kreadPtrI(hdrPtr + UInt64(off_vm_map_header_links_next))
+    let firstEntry = _kreadPtrI(hdrPtr + UInt64(numericCast(off_vm_map_header_links_next)))
     var entryPtr = firstEntry
     var entrySeen = Set<UInt64>()
     var count = 0
@@ -204,8 +204,8 @@ private func _vmmapK(pid: Int32, mgr: laramgr) -> String? {
         let protBits = _kread32I(entryPtr + 0x20)
         let maxProt = (protBits >> 8) & 0xFF
         let curProt = protBits & 0xFF
-        let alias = _kread16I(entryPtr + UInt64(off_vm_map_entry_vme_alias))
-        let objOrDelta = _kread64I(entryPtr + UInt64(off_vm_map_entry_vme_object_or_delta))
+        let alias = _kread16I(entryPtr + UInt64(numericCast(off_vm_map_entry_vme_alias)))
+        let objOrDelta = _kread64I(entryPtr + UInt64(numericCast(off_vm_map_entry_vme_object_or_delta)))
 
         func protStr(_ p: UInt32) -> String {
             var s = ""
@@ -217,8 +217,8 @@ private func _vmmapK(pid: Int32, mgr: laramgr) -> String? {
 
         var name = ""
         if objOrDelta != 0 && (objOrDelta & 1) == 0 {
-            let voSize = _kread64I(objOrDelta + UInt64(off_vm_object_vo_un1_vou_size))
-            let voRef = _kread32I(objOrDelta + UInt64(off_vm_object_ref_count))
+            let voSize = _kread64I(objOrDelta + UInt64(numericCast(off_vm_object_vo_un1_vou_size)))
+            let voRef = _kread32I(objOrDelta + UInt64(numericCast(off_vm_object_ref_count)))
             name = "vm_object(size=\(voSize), ref=\(voRef))"
         } else {
             name = "submap/zeroed"
@@ -227,7 +227,7 @@ private func _vmmapK(pid: Int32, mgr: laramgr) -> String? {
         lines.append(String(format: "0x%016llx 0x%016llx %-10s %-6s %-6s 0x%04x %@",
                           start, end, formatSizeI(Int(size)),
                           protStr(curProt), protStr(maxProt), alias, name))
-        entryPtr = _kreadPtrI(entryPtr + UInt64(off_vm_map_entry_links_next))
+        entryPtr = _kreadPtrI(entryPtr + UInt64(numericCast(off_vm_map_entry_links_next)))
     }
     return lines.joined(separator: "\n")
 }
