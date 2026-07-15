@@ -96,6 +96,13 @@ final class OmegaBootstrap {
         registerProcLinkCommands()
         registerPrivilegeShellCommands()
         registerPPLShellCommands()
+        registerKernelObjectExplorer()
+        registerProcessExplorer()
+        registerIPCExplorer()
+        registerVFSExplorer()
+        registerMemoryExplorer()
+        registerDebuggerCommands()
+        registerSnapshotEngine()
     }
 
     // MARK: - Shell Basics
@@ -271,6 +278,42 @@ LARA Shell — full command reference (iSH-level access)
                                (ucred, cs-flags, AMFI, sandbox, system-files)
   help-ppl                     PAC/KTRR/SMR/PPL analysis commands (OmegaExtendedG)
                                (pac-reader, ktrr-*, smr-*, ppl-*, auto-ppl-breaker)
+
+  ── KERNEL OBJECT EXPLORER ──────────────────────────────
+  fd-info <pid> <fd>           file descriptor kernel info
+  socket-info <fd>             decode socket struct
+  socket-info-addr <addr>      decode socket at address
+  socket-dump <fd>             structured socket memory dump
+  socket-save <fd>             save socket snapshot
+  socket-diff <fd>             compare socket to saved snapshot
+
+  ── PROCESS EXPLORER ─────────────────────────────────────
+  task-info <pid>              task/vm_map/ipc_space/threads/refcount
+  ucred-info <pid>             uid/gid/groups/label/sandbox/entitlements
+  vmmap-k <pid>                kernel-level vmmap
+
+  ── IPC EXPLORER ─────────────────────────────────────────
+  ipc-space <pid>              Mach port table for process
+  port-info <addr>             ipc_port detailed info
+
+  ── VFS EXPLORER ─────────────────────────────────────────
+  vnode-info <path>            vnode metadata
+  mount-info                   current mount flags
+
+  ── MEMORY EXPLORER ─────────────────────────────────────
+  kstruct <type> <addr>        auto-decode kernel struct
+                               types: socket, proc, task, ucred, vnode, ipc_port
+  ksearch <pattern> [s] [e]    search kernel for pointer/pattern
+  xref <target> [s] [e]        find all references to address
+
+  ── DEBUGGER ─────────────────────────────────────────────
+  watch32 <addr> [int] [dur]   watch 32-bit value changes
+  watch64 <addr> [int] [dur]   watch 64-bit value changes
+  trace-write <addr> [dur]     log all writes to address
+
+  ── SNAPSHOT ENGINE ──────────────────────────────────────
+  snapshot kernel              save proc/task/ucred/socket/vm_map
+  snapshot-diff                compare current state to snapshot
 """)
         }
 
