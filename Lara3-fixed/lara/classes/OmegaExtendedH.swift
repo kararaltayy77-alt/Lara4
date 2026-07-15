@@ -44,11 +44,11 @@ private final class SocketSnapshotStore {
 
     func save(pid: Int32, fd: Int, data: Data) {
         lock.lock(); defer { lock.unlock() }
-        snapshots["\(pid):\(fd)"] = SocketSnapshot(timestamp: Date(), data: data)
+        snapshots[String(format: "%d:%d", pid, fd)] = SocketSnapshot(timestamp: Date(), data: data)
     }
     func load(pid: Int32, fd: Int) -> (Date, Data)? {
         lock.lock(); defer { lock.unlock() }
-        guard let snap = snapshots["\(pid):\(fd)"] else { return nil }
+        guard let snap = snapshots[String(format: "%d:%d", pid, fd)] else { return nil }
         return (snap.timestamp, snap.data)
     }
 }
@@ -191,7 +191,7 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     switch res.fg_type {
     case .socket: fg_typeStr = "DTYPE_SOCKET"
     case .vnode: fg_typeStr = "DTYPE_VNODE"
-    case .other(let flag): fg_typeStr = "DTYPE_OTHER(\(flag))"
+    case .other(let flag): fg_typeStr = String(format: "DTYPE_OTHER(%d)", flag)
     case .unknown: fg_typeStr = "UNKNOWN"
     }
 
@@ -244,7 +244,7 @@ private func _socketInfoFromAddr(socketAddr: UInt64) -> String? {
 
     let typeNames = [1: "SOCK_STREAM", 2: "SOCK_DGRAM", 3: "SOCK_RAW",
                      4: "SOCK_RDM", 5: "SOCK_SEQPACKET", 6: "SOCK_DCCP", 10: "SOCK_PACKET"]
-    let typeStr = typeNames[Int(so_type)] ?? "UNKNOWN(\(so_type))"
+    let typeStr = typeNames[Int(so_type)] ?? String(format: "UNKNOWN(%d)", so_type)
 
     var stateFlags: [String] = []
     if (so_state & 0x001) != 0 { stateFlags.append("SS_NOFDREF") }
@@ -309,7 +309,7 @@ func registerKernelObjectExplorer() {
             return .fail("fd-info: usage — fd-info <pid|name> <fd>")
         }
         guard let out = _fdInfo(pid: pid, fd: fd, mgr: mgr) else {
-            return .fail("fd-info: failed to resolve fd \(fd) for pid \(pid). Check: kernel r/w ready? offsets correct? process exists?")
+            return .fail(String(format: "fd-info: failed to resolve fd %d for pid %d. Check: kernel r/w ready? offsets correct? process exists?", fd, pid))
         }
         return .ok(out)
     }
@@ -323,7 +323,7 @@ func registerKernelObjectExplorer() {
             return .fail("socket-info: usage — socket-info <pid|name> <fd>")
         }
         guard let out = _socketInfo(pid: pid, fd: fd, mgr: mgr) else {
-            return .fail("socket-info: fd \(fd) is not a socket or not found for pid \(pid). Use 'fd-info \(pid) \(fd)' to verify fd type.")
+            return .fail(String(format: "socket-info: fd %d is not a socket or not found for pid %d. Use 'fd-info %d %d' to verify fd type.", fd, pid, pid, fd))
         }
         return .ok(out)
     }
@@ -334,7 +334,7 @@ func registerKernelObjectExplorer() {
             return .fail("socket-info-addr: usage — socket-info-addr <socket_addr_hex>")
         }
         guard let out = _socketInfoFromAddr(socketAddr: addr) else {
-            return .fail("socket-info-addr: invalid socket address 0x\(String(format: "%llx", addr))")
+            return .fail(String(format: "socket-info-addr: invalid socket address 0x%llx", addr))
         }
         return .ok(out)
     }
@@ -348,7 +348,7 @@ func registerKernelObjectExplorer() {
             return .fail("socket-dump: usage — socket-dump <pid|name> <fd>")
         }
         guard let out = _socketDump(pid: pid, fd: fd, mgr: mgr) else {
-            return .fail("socket-dump: fd \(fd) is not a socket or not found for pid \(pid)")
+            return .fail(String(format: "socket-dump: fd %d is not a socket or not found for pid %d", fd, pid))
         }
         return .ok(out)
     }
@@ -362,7 +362,7 @@ func registerKernelObjectExplorer() {
             return .fail("socket-save: usage — socket-save <pid|name> <fd>")
         }
         guard let socketAddr = _resolveSocketAddr(pid: pid, fd: Int32(fd), mgr: mgr), socketAddr != 0 else {
-            return .fail("socket-save: fd \(fd) is not a socket for pid \(pid)")
+            return .fail(String(format: "socket-save: fd %d is not a socket for pid %d", fd, pid))
         }
         var data = Data()
         for off in stride(from: 0, to: 0x200, by: 8) {
@@ -382,10 +382,10 @@ func registerKernelObjectExplorer() {
             return .fail("socket-diff: usage — socket-diff <pid|name> <fd>")
         }
         guard let (timestamp, before) = SocketSnapshotStore.shared.load(pid: pid, fd: fd) else {
-            return .fail("socket-diff: no snapshot for pid=\(pid) fd=\(fd). Run 'socket-save <pid> <fd>' first.")
+            return .fail(String(format: "socket-diff: no snapshot for pid=%d fd=%d. Run 'socket-save <pid> <fd>' first.", pid, fd))
         }
         guard let socketAddr = _resolveSocketAddr(pid: pid, fd: Int32(fd), mgr: mgr), socketAddr != 0 else {
-            return .fail("socket-diff: fd \(fd) is not a socket for pid \(pid)")
+            return .fail(String(format: "socket-diff: fd %d is not a socket for pid %d", fd, pid))
         }
         var after = Data()
         for off in stride(from: 0, to: 0x200, by: 8) {
@@ -402,12 +402,12 @@ func registerKernelObjectExplorer() {
             if b != a { diffs.append((i, b, a)) }
         }
         if diffs.isEmpty {
-            return .ok("socket-diff: pid=\(pid) fd=\(fd)  no changes since \(timestamp)")
+            return .ok(String(format: "socket-diff: pid=%d fd=%d  no changes since %@", pid, fd, timestamp as NSDate))
         }
         var lines = [
             String(format: "socket-diff: pid=%d fd=%d  socket@0x%llx", pid, fd, socketAddr),
-            "  saved: \(timestamp)",
-            "  changed offsets: \(diffs.count)",
+            String(format: "  saved: %@", timestamp as NSDate),
+            String(format: "  changed offsets: %d", diffs.count),
             ""
         ]
         for (off, b, a) in diffs {
