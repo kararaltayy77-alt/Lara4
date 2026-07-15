@@ -57,6 +57,7 @@ private func _kread64N(_ addr: UInt64) -> UInt64 {
 // MARK: – snapshot kernel
 
 private func _snapshotKernel() -> String? {
+    let ourProc = ds_get_our_proc()
     guard ourProc != 0 else { return nil }
 
     let procRo = _kreadPtrN(ourProc + procPProcRoOff)
