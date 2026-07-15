@@ -23,7 +23,7 @@ private struct FdResolution {
     let fg_type: FgType
 }
 
-private enum FgType {
+private enum FgType: Equatable {
     case socket
     case vnode
     case other(UInt32)
