@@ -144,8 +144,8 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
         lines.append("")
         lines.append("Socket structure detected — use 'socket-info <pid> <fd>' for full decode.")
     }
-    return lines.joined(separator: "
-")
+    let nl = "\n"
+    return lines.joined(separator: nl)
 }
 
 // MARK: – socket-info
@@ -223,8 +223,8 @@ private func _socketInfoFromAddr(socketAddr: UInt64) -> String? {
         String(format: "so_rcv          : cc=%d hiwat=%d", so_rcv_cc, so_rcv_hiwat),
         String(format: "so_snd          : cc=%d hiwat=%d", so_snd_cc, so_snd_hiwat),
     ]
-    return lines.joined(separator: "
-")
+    let nl = "\n"
+    return lines.joined(separator: nl)
 }
 
 // MARK: – socket-dump
@@ -258,8 +258,8 @@ private func _socketDump(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
         }
         lines.append(String(format: "0x%03X: %016llx %016llx", off, vals[0], vals[1]))
     }
-    return lines.joined(separator: "
-")
+    let nl = "\n"
+    return lines.joined(separator: nl)
 }
 
 // MARK: – get socket address helper
@@ -396,7 +396,8 @@ func registerKernelObjectExplorer() {
         var lines = [
             String(format: "socket-diff: pid=%d fd=%d  socket@0x%llx", pid, fd, socketAddr),
             "  saved: \(timestamp)",
-            "  changed offsets: \(diffs.count)", ""
+            "  changed offsets: \(diffs.count)",
+            ""
         ]
         for (off, b, a) in diffs {
             lines.append(String(format: "Offset 0x%03X:", off))
@@ -404,7 +405,7 @@ func registerKernelObjectExplorer() {
             lines.append(String(format: "  after : 0x%016llx", a))
             lines.append("")
         }
-        return .ok(lines.joined(separator: "
-"))
+        let nl = "\n"
+        return .ok(lines.joined(separator: nl))
     }
 }
