@@ -402,11 +402,11 @@ func registerKernelObjectExplorer() {
             if b != a { diffs.append((i, b, a)) }
         }
         if diffs.isEmpty {
-            let tsStr = "\(timestamp)"; return .ok(String(format: "socket-diff: pid=%d fd=%d  no changes since %@", pid, fd, tsStr))
+            return .ok("socket-diff: pid=" + String(pid) + " fd=" + String(fd) + "  no changes since " + String(describing: timestamp))
         }
         var lines = [
             String(format: "socket-diff: pid=%d fd=%d  socket@0x%llx", pid, fd, socketAddr),
-            let tsStr2 = "\(timestamp)"; String(format: "  saved: %@", tsStr2),
+            "  saved: " + String(describing: timestamp),
             String(format: "  changed offsets: %d", diffs.count),
             ""
         ]
