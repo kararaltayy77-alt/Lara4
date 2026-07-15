@@ -34,31 +34,42 @@ private func _parseAddrJ(_ s: String) -> UInt64? {
     return UInt64(c, radix: 16)
 }
 
+// MARK: – ipc-space
+
 private func _ipcSpace(pid: Int32, mgr: laramgr) -> String? {
     guard mgr.dsready else { return nil }
     let ourProc = ds_get_our_proc()
     guard ourProc != 0 else { return nil }
+
+    let pidOff = UInt64(off_proc_p_pid)
+    let listOff = UInt64(off_proc_p_list_le_next)
+    let procRoOff = UInt64(off_proc_p_proc_ro)
+    let prTaskOff = UInt64(off_proc_ro_pr_task)
+    let itkSpaceOff = UInt64(off_task_itk_space)
+    let isTableOff = UInt64(off_ipc_space_is_table)
+    let entryIeObjOff = UInt64(off_ipc_entry_ie_object)
+    let portKobjOff = UInt64(off_ipc_port_ip_kobject)
 
     var procPtr: UInt64 = 0
     var ptr = ourProc
     var seen = Set<UInt64>()
     while ptr != 0 && !seen.contains(ptr) {
         seen.insert(ptr)
-        let p_pid = Int32(bitPattern: ds_kread32(ptr + procPPidOff))
+        let p_pid = Int32(bitPattern: ds_kread32(ptr + pidOff))
         if p_pid == pid { procPtr = ptr; break }
-        ptr = ds_kreadptr(ptr + procPListLeNextOff)
+        ptr = ds_kreadptr(ptr + listOff)
     }
     guard procPtr != 0 else { return nil }
 
-    let procRo = _kreadPtrJ(procPtr + procPProcRoOff)
-    let taskPtr = _kreadPtrJ(procRo + procRoPrTaskOff)
+    let procRo = _kreadPtrJ(procPtr + procRoOff)
+    let taskPtr = _kreadPtrJ(procRo + prTaskOff)
     guard taskPtr != 0 else { return nil }
 
-    let itkSpace = _kreadPtrJ(taskPtr + taskItkSpaceOff)
+    let itkSpace = _kreadPtrJ(taskPtr + itkSpaceOff)
     guard itkSpace != 0 else { return nil }
 
-    let isTable = _kreadPtrJ(itkSpace + ipcSpaceIsTableOff)
-    let isTableSize = _kread32J(itkSpace + ipcSpaceIsTableOff + 8)
+    let isTable = _kreadPtrJ(itkSpace + isTableOff)
+    let isTableSize = _kread32J(itkSpace + isTableOff + 8)
 
     var lines = [
         String(format: "ipc-space: pid %d", pid),
@@ -78,10 +89,10 @@ private func _ipcSpace(pid: Int32, mgr: laramgr) -> String? {
 
     for i in 0..<min(Int(isTableSize), 256) {
         let entryAddr = isTable + UInt64(i) * entrySize
-        let ieObject = _kreadPtrJ(entryAddr + ipcEntryIeObjectOff)
+        let ieObject = _kreadPtrJ(entryAddr + entryIeObjOff)
         if ieObject == 0 { continue }
 
-        let ipKobject = _kreadPtrJ(ieObject + ipcPortIpKobjectOff)
+        let ipKobject = _kreadPtrJ(ieObject + portKobjOff)
         let ieBits = _kread32J(entryAddr + 0x08)
         let rights = ieBits & 0xFFFF
 
@@ -114,7 +125,9 @@ private func _ipcSpace(pid: Int32, mgr: laramgr) -> String? {
 private func _portInfo(portAddr: UInt64) -> String? {
     guard portAddr != 0, ds_isvalid(portAddr) else { return nil }
 
-    let ipKobject = _kreadPtrJ(portAddr + ipcPortIpKobjectOff)
+    let portKobjOff = UInt64(off_ipc_port_ip_kobject)
+
+    let ipKobject = _kreadPtrJ(portAddr + portKobjOff)
     let ipBits = _kread32J(portAddr + 0x08)
     let ipSrights = _kread32J(portAddr + 0x10)
     let ipReceiver = _kreadPtrJ(portAddr + 0x18)
