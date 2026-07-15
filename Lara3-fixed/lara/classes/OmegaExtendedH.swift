@@ -7,6 +7,31 @@
 import Foundation
 import Darwin
 
+// MARK: – Single Source of Truth: FD Resolution Result
+
+private struct FdResolution {
+    let pid: Int32
+    let fd: Int32
+    let procPtr: UInt64
+    let fdPtr: UInt64
+    let ofilesPtr: UInt64
+    let fileprocPtr: UInt64
+    let fileglobPtr: UInt64
+    let fg_flag: UInt32
+    let fg_data: UInt64
+    let fg_ops: UInt64
+    let fg_type: FgType
+}
+
+private enum FgType {
+    case socket
+    case vnode
+    case other(UInt32)
+    case unknown
+}
+
+// MARK: – Socket Snapshot Store
+
 private struct SocketSnapshot: Codable {
     let timestamp: Date
     let data: Data
@@ -28,6 +53,8 @@ private final class SocketSnapshotStore {
     }
 }
 
+// MARK: – Kernel Read Helpers
+
 private func _kreadPtrH(_ addr: UInt64) -> UInt64 {
     guard addr != 0, ds_isvalid(addr) else { return 0 }
     return ds_kreadptr(addr)
@@ -43,40 +70,32 @@ private func _kread32H(_ addr: UInt64) -> UInt32 {
     return ds_kread32(addr)
 }
 
+// MARK: – PID Resolution (Single Source of Truth)
+
 private func _resolvePidH(_ s: String) -> Int32? {
     let t = s.trimmingCharacters(in: .whitespaces)
     if let n = Int32(t) { return n }
     return ProcessLayer.shared.find(matching: t.lowercased()).first?.pid
 }
 
-private func _parseAddrH(_ s: String) -> UInt64? {
-    let t = s.trimmingCharacters(in: .whitespaces)
-    let c = (t.hasPrefix("0x") || t.hasPrefix("0X")) ? String(t.dropFirst(2)) : t
-    return UInt64(c, radix: 16)
-}
-
-private func _kreadCStrH(_ addr: UInt64, max: Int = 64) -> String {
-    guard addr != 0, ds_isvalid(addr) else { return "" }
-    var buf = [UInt8](repeating: 0, count: max + 1)
-    for i in 0..<max {
-        let b = ds_kread8(addr + UInt64(i))
-        if b == 0 { break }
-        buf[i] = b
-    }
-    return String(cString: buf.withUnsafeBufferPointer { ptr in
-        ptr.baseAddress!.withMemoryRebound(to: CChar.self, capacity: max + 1) { $0 }
-    })
-}
-
-// MARK: – resolve proc by PID
+// MARK: – Proc Resolution (Single Source of Truth)
+// Resolves PID to kernel proc pointer.
+// For current process: uses ds_get_our_proc() directly (fast & reliable).
+// For other processes: walks the allproc list.
 
 private func _resolveProcPtr(pid: Int32) -> UInt64? {
-    let procPListLeNextOff = UInt64(off_proc_p_list_le_next)
-    let procPPidOff = UInt64(off_proc_p_pid)
-
     let ourProc = ds_get_our_proc()
     guard ourProc != 0 else { return nil }
 
+    // Fast path: if this is our own process, return directly
+    let procPPidOff = UInt64(off_proc_p_pid)
+    let ourPid = Int32(bitPattern: ds_kread32(ourProc + procPPidOff))
+    if ourPid == pid {
+        return ourProc
+    }
+
+    // Slow path: walk the allproc list for other processes
+    let procPListLeNextOff = UInt64(off_proc_p_list_le_next)
     var procPtr: UInt64 = 0
     var ptr = ourProc
     var seen = Set<UInt64>()
@@ -89,10 +108,13 @@ private func _resolveProcPtr(pid: Int32) -> UInt64? {
     return procPtr != 0 ? procPtr : nil
 }
 
-// MARK: – fd-info
+// MARK: – FD Resolution (Single Source of Truth)
+// Resolves (pid, fd) to full fd structure. ALL commands use this.
 
-private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
+private func _resolveFd(pid: Int32, fd: Int32, mgr: laramgr) -> FdResolution? {
     guard mgr.dsready else { return nil }
+
+    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
 
     let procPFdOff = UInt64(off_proc_p_fd)
     let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
@@ -101,48 +123,92 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     let vnodeVUsecountOff = UInt64(off_vnode_v_usecount)
     let vnodeVIocountOff = UInt64(off_vnode_v_iocount)
 
-    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
-
     let fdPtr = _kreadPtrH(procPtr + procPFdOff)
     guard fdPtr != 0 else { return nil }
+
     let ofilesPtr = _kreadPtrH(fdPtr + filedescFdOfilesOff)
     guard ofilesPtr != 0 else { return nil }
+
     let fileprocPtr = _kreadPtrH(ofilesPtr + UInt64(fd) * 8)
     guard fileprocPtr != 0 else { return nil }
+
     let fileglobPtr = _kreadPtrH(fileprocPtr + fileprocFpGlobOff)
     guard fileglobPtr != 0 else { return nil }
+
     let fg_flag = _kread32H(fileglobPtr + 0x10)
     let fg_data = _kreadPtrH(fileglobPtr + fileglobFgDataOff)
     let fg_ops  = _kreadPtrH(fileglobPtr + 0x28)
 
-    var fg_typeStr = "UNKNOWN"
+    let fg_type: FgType
     if fg_data != 0 {
         let so_type = _kread32H(fg_data + 0x04)
         if so_type >= 1 && so_type <= 10 {
-            fg_typeStr = "DTYPE_SOCKET"
+            fg_type = .socket
         } else {
             let v_usecount = _kread32H(fg_data + vnodeVUsecountOff)
             let v_iocount  = _kread32H(fg_data + vnodeVIocountOff)
             if v_usecount > 0 && v_usecount < 0x10000 && v_iocount > 0 && v_iocount < 0x10000 {
-                fg_typeStr = "DTYPE_VNODE"
+                fg_type = .vnode
             } else {
-                fg_typeStr = "DTYPE_OTHER(\(fg_flag))"
+                fg_type = .other(fg_flag)
             }
         }
+    } else {
+        fg_type = .unknown
+    }
+
+    return FdResolution(
+        pid: pid, fd: fd,
+        procPtr: procPtr, fdPtr: fdPtr, ofilesPtr: ofilesPtr,
+        fileprocPtr: fileprocPtr, fileglobPtr: fileglobPtr,
+        fg_flag: fg_flag, fg_data: fg_data, fg_ops: fg_ops,
+        fg_type: fg_type
+    )
+}
+
+// MARK: – Socket Address Resolution (Single Source of Truth)
+
+private func _resolveSocketAddr(pid: Int32, fd: Int32, mgr: laramgr) -> UInt64? {
+    guard let res = _resolveFd(pid: pid, fd: fd, mgr: mgr) else { return nil }
+    guard res.fg_type == .socket, res.fg_data != 0 else { return nil }
+    return res.fg_data
+}
+
+// MARK: – Address Parser
+
+private func _parseAddrH(_ s: String) -> UInt64? {
+    let t = s.trimmingCharacters(in: .whitespaces)
+    let c = (t.hasPrefix("0x") || t.hasPrefix("0X")) ? String(t.dropFirst(2)) : t
+    return UInt64(c, radix: 16)
+}
+
+// MARK: – fd-info
+
+private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
+    guard let res = _resolveFd(pid: pid, fd: fd, mgr: mgr) else { return nil }
+
+    let fg_typeStr: String
+    switch res.fg_type {
+    case .socket: fg_typeStr = "DTYPE_SOCKET"
+    case .vnode: fg_typeStr = "DTYPE_VNODE"
+    case .other(let flag): fg_typeStr = "DTYPE_OTHER(\(flag))"
+    case .unknown: fg_typeStr = "UNKNOWN"
     }
 
     var lines = [
-        String(format: "PID             : %d", pid),
-        String(format: "FD              : %d", fd),
-        String(format: "proc            : 0x%016llx", procPtr),
-        String(format: "fileproc        : 0x%016llx", fileprocPtr),
-        String(format: "fileglob        : 0x%016llx", fileglobPtr),
+        String(format: "PID             : %d", res.pid),
+        String(format: "FD              : %d", res.fd),
+        String(format: "proc            : 0x%016llx", res.procPtr),
+        String(format: "fdPtr           : 0x%016llx", res.fdPtr),
+        String(format: "ofilesPtr       : 0x%016llx", res.ofilesPtr),
+        String(format: "fileproc        : 0x%016llx", res.fileprocPtr),
+        String(format: "fileglob        : 0x%016llx", res.fileglobPtr),
         String(format: "fg_type         : %@", fg_typeStr),
-        String(format: "fg_flag         : 0x%08x", fg_flag),
-        String(format: "fg_ops          : 0x%016llx", fg_ops),
-        String(format: "fg_data         : 0x%016llx", fg_data),
+        String(format: "fg_flag         : 0x%08x", res.fg_flag),
+        String(format: "fg_ops          : 0x%016llx", res.fg_ops),
+        String(format: "fg_data         : 0x%016llx", res.fg_data),
     ]
-    if fg_typeStr == "DTYPE_SOCKET" && fg_data != 0 {
+    if res.fg_type == .socket && res.fg_data != 0 {
         lines.append("")
         lines.append("Socket structure detected — use 'socket-info <pid> <fd>' for full decode.")
     }
@@ -153,26 +219,9 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
 // MARK: – socket-info
 
 private func _socketInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
-    guard mgr.dsready else { return nil }
-
-    let procPFdOff = UInt64(off_proc_p_fd)
-    let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
-    let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
-    let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
-
-    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
-
-    let fdPtr = _kreadPtrH(procPtr + procPFdOff)
-    guard fdPtr != 0 else { return nil }
-    let ofilesPtr = _kreadPtrH(fdPtr + filedescFdOfilesOff)
-    guard ofilesPtr != 0 else { return nil }
-    let fileprocPtr = _kreadPtrH(ofilesPtr + UInt64(fd) * 8)
-    guard fileprocPtr != 0 else { return nil }
-    let fileglobPtr = _kreadPtrH(fileprocPtr + fileprocFpGlobOff)
-    guard fileglobPtr != 0 else { return nil }
-    let socketAddr = _kreadPtrH(fileglobPtr + fileglobFgDataOff)
-    guard socketAddr != 0 else { return nil }
-
+    guard let socketAddr = _resolveSocketAddr(pid: pid, fd: fd, mgr: mgr), socketAddr != 0 else {
+        return nil
+    }
     return _socketInfoFromAddr(socketAddr: socketAddr)
 }
 
@@ -232,26 +281,9 @@ private func _socketInfoFromAddr(socketAddr: UInt64) -> String? {
 // MARK: – socket-dump
 
 private func _socketDump(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
-    guard mgr.dsready else { return nil }
-
-    let procPFdOff = UInt64(off_proc_p_fd)
-    let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
-    let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
-    let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
-
-    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
-
-    let fdPtr = _kreadPtrH(procPtr + procPFdOff)
-    guard fdPtr != 0 else { return nil }
-    let ofilesPtr = _kreadPtrH(fdPtr + filedescFdOfilesOff)
-    guard ofilesPtr != 0 else { return nil }
-    let fileprocPtr = _kreadPtrH(ofilesPtr + UInt64(fd) * 8)
-    guard fileprocPtr != 0 else { return nil }
-    let fileglobPtr = _kreadPtrH(fileprocPtr + fileprocFpGlobOff)
-    guard fileglobPtr != 0 else { return nil }
-    let socketAddr = _kreadPtrH(fileglobPtr + fileglobFgDataOff)
-    guard socketAddr != 0 else { return nil }
-
+    guard let socketAddr = _resolveSocketAddr(pid: pid, fd: fd, mgr: mgr), socketAddr != 0 else {
+        return nil
+    }
     var lines: [String] = []
     for off in stride(from: 0, to: 0x200, by: 16) {
         var vals: [UInt64] = []
@@ -262,29 +294,6 @@ private func _socketDump(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     }
     let nl = "\n"
     return lines.joined(separator: nl)
-}
-
-// MARK: – get socket address helper
-
-private func _getSocketAddr(pid: Int32, fd: Int, mgr: laramgr) -> UInt64? {
-    guard mgr.dsready else { return nil }
-
-    let procPFdOff = UInt64(off_proc_p_fd)
-    let filedescFdOfilesOff = UInt64(off_filedesc_fd_ofiles)
-    let fileprocFpGlobOff = UInt64(off_fileproc_fp_glob)
-    let fileglobFgDataOff = UInt64(off_fileglob_fg_data)
-
-    guard let procPtr = _resolveProcPtr(pid: pid) else { return nil }
-
-    let fdPtr = _kreadPtrH(procPtr + procPFdOff)
-    guard fdPtr != 0 else { return nil }
-    let ofilesPtr = _kreadPtrH(fdPtr + filedescFdOfilesOff)
-    guard ofilesPtr != 0 else { return nil }
-    let fileprocPtr = _kreadPtrH(ofilesPtr + UInt64(fd) * 8)
-    guard fileprocPtr != 0 else { return nil }
-    let fileglobPtr = _kreadPtrH(fileprocPtr + fileprocFpGlobOff)
-    guard fileglobPtr != 0 else { return nil }
-    return _kreadPtrH(fileglobPtr + fileglobFgDataOff)
 }
 
 // MARK: – Registration
@@ -300,7 +309,7 @@ func registerKernelObjectExplorer() {
             return .fail("fd-info: usage — fd-info <pid|name> <fd>")
         }
         guard let out = _fdInfo(pid: pid, fd: fd, mgr: mgr) else {
-            return .fail("fd-info: failed to resolve fd \(fd) for pid \(pid)")
+            return .fail("fd-info: failed to resolve fd \(fd) for pid \(pid). Check: kernel r/w ready? offsets correct? process exists?")
         }
         return .ok(out)
     }
@@ -314,7 +323,7 @@ func registerKernelObjectExplorer() {
             return .fail("socket-info: usage — socket-info <pid|name> <fd>")
         }
         guard let out = _socketInfo(pid: pid, fd: fd, mgr: mgr) else {
-            return .fail("socket-info: fd \(fd) is not a socket or not found for pid \(pid)")
+            return .fail("socket-info: fd \(fd) is not a socket or not found for pid \(pid). Use 'fd-info \(pid) \(fd)' to verify fd type.")
         }
         return .ok(out)
     }
@@ -352,7 +361,7 @@ func registerKernelObjectExplorer() {
               let fd = Int(parts[1]) else {
             return .fail("socket-save: usage — socket-save <pid|name> <fd>")
         }
-        guard let socketAddr = _getSocketAddr(pid: pid, fd: fd, mgr: mgr), socketAddr != 0 else {
+        guard let socketAddr = _resolveSocketAddr(pid: pid, fd: Int32(fd), mgr: mgr), socketAddr != 0 else {
             return .fail("socket-save: fd \(fd) is not a socket for pid \(pid)")
         }
         var data = Data()
@@ -375,7 +384,7 @@ func registerKernelObjectExplorer() {
         guard let (timestamp, before) = SocketSnapshotStore.shared.load(pid: pid, fd: fd) else {
             return .fail("socket-diff: no snapshot for pid=\(pid) fd=\(fd). Run 'socket-save <pid> <fd>' first.")
         }
-        guard let socketAddr = _getSocketAddr(pid: pid, fd: fd, mgr: mgr), socketAddr != 0 else {
+        guard let socketAddr = _resolveSocketAddr(pid: pid, fd: Int32(fd), mgr: mgr), socketAddr != 0 else {
             return .fail("socket-diff: fd \(fd) is not a socket for pid \(pid)")
         }
         var after = Data()
