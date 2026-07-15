@@ -281,11 +281,11 @@ LARA Shell — full command reference (iSH-level access)
 
   ── KERNEL OBJECT EXPLORER ──────────────────────────────
   fd-info <pid> <fd>           file descriptor kernel info
-  socket-info <fd>             decode socket struct
+  socket-info <pid> <fd>       decode socket struct
   socket-info-addr <addr>      decode socket at address
-  socket-dump <fd>             structured socket memory dump
-  socket-save <fd>             save socket snapshot
-  socket-diff <fd>             compare socket to saved snapshot
+  socket-dump <pid> <fd>       structured socket memory dump
+  socket-save <pid> <fd>       save socket snapshot
+  socket-diff <pid> <fd>       compare socket to saved snapshot
 
   ── PROCESS EXPLORER ─────────────────────────────────────
   task-info <pid>              task/vm_map/ipc_space/threads/refcount
