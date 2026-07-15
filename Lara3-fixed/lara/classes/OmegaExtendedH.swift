@@ -191,7 +191,7 @@ private func _fdInfo(pid: Int32, fd: Int32, mgr: laramgr) -> String? {
     switch res.fg_type {
     case .socket: fg_typeStr = "DTYPE_SOCKET"
     case .vnode: fg_typeStr = "DTYPE_VNODE"
-    case .other(let flag): fg_typeStr = String(format: "DTYPE_OTHER(%d)", flag)
+    case .other(let flag): fg_typeStr = String(format: "DTYPE_OTHER(%u)", flag)
     case .unknown: fg_typeStr = "UNKNOWN"
     }
 
@@ -323,7 +323,7 @@ func registerKernelObjectExplorer() {
             return .fail("socket-info: usage — socket-info <pid|name> <fd>")
         }
         guard let out = _socketInfo(pid: pid, fd: fd, mgr: mgr) else {
-            return .fail(String(format: "socket-info: fd %d is not a socket or not found for pid %d. Use 'fd-info %d %d' to verify fd type.", fd, pid, pid, fd))
+            return .fail(String(format: "socket-info: fd %d is not a socket or not found for pid %d. Use fd-info %d %d to verify fd type.", fd, pid, pid, fd))
         }
         return .ok(out)
     }
@@ -402,11 +402,11 @@ func registerKernelObjectExplorer() {
             if b != a { diffs.append((i, b, a)) }
         }
         if diffs.isEmpty {
-            return .ok(String(format: "socket-diff: pid=%d fd=%d  no changes since %@", pid, fd, timestamp as NSDate))
+            let tsStr = "\(timestamp)"; return .ok(String(format: "socket-diff: pid=%d fd=%d  no changes since %@", pid, fd, tsStr))
         }
         var lines = [
             String(format: "socket-diff: pid=%d fd=%d  socket@0x%llx", pid, fd, socketAddr),
-            String(format: "  saved: %@", timestamp as NSDate),
+            let tsStr2 = "\(timestamp)"; String(format: "  saved: %@", tsStr2),
             String(format: "  changed offsets: %d", diffs.count),
             ""
         ]
