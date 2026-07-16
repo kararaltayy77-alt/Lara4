@@ -94,10 +94,10 @@ private func beginbackgroundtask() {
     bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "lara.krw") {
         // Expiration handler — extend if possible
         globallogger.log("(ka) bg task expiring — attempting extension")
-        self.endbackgroundtask()
-        self.bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "lara.krw.extended") {
+        endbackgroundtask()
+        bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "lara.krw.extended") {
             globallogger.log("(ka) bg task fully expired — sockets may degrade")
-            self.endbackgroundtask()
+            endbackgroundtask()
         }
     }
     if bgTaskId != .invalid {
@@ -116,7 +116,7 @@ private func endbackgroundtask() {
 
 private func registerbgtask() {
     BGTaskScheduler.shared.register(forTaskWithIdentifier: bgTaskIdentifier, using: nil) { task in
-        self.handlebgtask(task)
+        handlebgtask(task)
     }
     schedulebgtask()
 }
@@ -160,7 +160,8 @@ private func handlebgtask(_ task: BGTask) {
 // MARK: – Socket Health Probe
 
 private func probesockethealth() -> Bool {
-    guard let kbase = ds_get_kernel_base(), kbase != 0 else { return false }
+    let kbase = ds_get_kernel_base()
+    guard kbase != 0 else { return false }
     do {
         let magic = ds_kread32(kbase)
         return magic == 0xFEEDFACF
@@ -201,19 +202,19 @@ private func registerlifecycleobservers() {
 
     let bg = nc.addObserver(forName: UIApplication.didEnterBackgroundNotification,
                             object: nil, queue: .main) { _ in
-        self.isInBackground = true
+        isInBackground = true
         globallogger.log("(ka) app entered background — extending bg task")
-        self.beginbackgroundtask()
+        beginbackgroundtask()
     }
 
     let fg = nc.addObserver(forName: UIApplication.willEnterForegroundNotification,
                             object: nil, queue: .main) { _ in
-        self.isInBackground = false
+        isInBackground = false
         globallogger.log("(ka) app entering foreground — checking socket health")
-        if !self.probesockethealth() {
+        if !probesockethealth() {
             globallogger.log("(ka) socket degraded during background — run 'revive'")
         }
-        self.ensurekaplaying()
+        ensurekaplaying()
     }
 
     lifecycleObservers = [bg, fg]
