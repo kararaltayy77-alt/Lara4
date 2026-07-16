@@ -70,12 +70,9 @@ final class OmegaCore {
         guard let handler = _lock.withLock({ _commands[key] }) else {
             OmegaBus.shared.emit("shell.unknown_command", key)
             if let suggestion = _suggestCommand(key) {
-                return .fail("""
-\(key): command not found
-  Did you mean '\(suggestion)'?  (type 'help' for full list  |  \(registeredCount) commands loaded)
-""")
+                return .fail("\(key): command not found. Did you mean '\(suggestion)'? (type 'help' for full list | \(registeredCount) commands loaded)")
             }
-            return .fail("\(key): command not found — type 'help' for full list  (\(registeredCount) commands loaded)")
+            return .fail("\(key): command not found — type 'help' for full list (\(registeredCount) commands loaded)")
         }
 
         // ── SURGICAL SAFETY LAYER — pre-flight validation ──────────────────
@@ -83,28 +80,22 @@ final class OmegaCore {
         switch safety {
         case .blocked(let msg):
             CommandLogger.shared.log(key, status: "safety-blocked", duration: 0)
-            return .fail("🛡️ \(msg)")
+            return .fail("SAFETY BLOCKED: \(msg)")
         case .dangerous(let msg):
-            // Proceed but prepend warning
             let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
             let validated = CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr)
-            return .ok("🛡️ SAFETY WARNING:
-" + msg + "
-" + String(repeating: "─", count: 50) + "
-" + validated)
+            return .ok("SAFETY WARNING: \(msg) | " + validated)
         case .warning(let msg):
             let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
             let validated = CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr)
-            return .ok("🛡️ \(msg)
-" + String(repeating: "─", count: 50) + "
-" + validated)
+            return .ok("SAFETY: \(msg) | " + validated)
         case .safe:
             let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
             return .ok(CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr))
         }
     }
 
-    // ── Crash-protected execution with 30 s timeout ────────────────────────
+        // ── Crash-protected execution with 30 s timeout ────────────────────────
     private static func _safeExecute(
         key: String,
         handler: @escaping Handler,
