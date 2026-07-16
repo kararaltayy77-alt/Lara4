@@ -591,7 +591,13 @@ LARA Shell — full command reference (iSH-level access)
                 return .fail(String(format: "kread: 0x%016llx is not a valid kernel address (bit63 must be set on arm64e)", addr))
             }
             let val = mgr.kread64(address: addr)
-            return .ok(String(format: "0x%016llx  =  0x%016llx  (%llu)", addr, val, val))
+            var pacNote = ""
+            if val != 0 && (val & 0xFFFF000000000000) != 0 {
+                if (val & (1 << 63)) == 0 {
+                    pacNote = "  [WARNING: bit63=0 — stripped PAC or non-pointer value]"
+                }
+            }
+            return .ok(String(format: "0x%016llx  =  0x%016llx  (%llu)%@", addr, val, val, pacNote))
         }
 
         OmegaCore.register("kwrite") { arg, mgr in
@@ -599,6 +605,9 @@ LARA Shell — full command reference (iSH-level access)
             let parts = arg.split(separator: " ").map { String($0) }
             guard parts.count == 2, let addr = parseAddr(parts[0]), let val = parseAddr(parts[1]) else {
                 return .fail("kwrite: usage: kwrite <addr> <value>")
+            }
+            guard ds_isvalid(addr) else {
+                return .fail(String(format: "kwrite: 0x%016llx is not a valid kernel address (bit63 must be set on arm64e)", addr))
             }
             mgr.kwrite64(address: addr, value: val)
             return .ok(String(format: "wrote 0x%016llx → [0x%016llx]", val, addr))
@@ -1732,113 +1741,129 @@ LARA Shell — full command reference (iSH-level access)
  """)
              }
 
-             // Kernel fallback: walk allproc and read ucred directly.
-             // iOS blocks proc_pidinfo for system/daemon processes (EPERM/EACCES),
-             // so we read credentials straight from the kernel ucred struct.
+             // ── SURGICAL FIX: Kernel fallback with dynamic offset probing ──
              guard mgr.hasOffsets else {
                  return .fail("proc-cred: proc_pidinfo blocked (iOS restriction); offsets not loaded")
              }
-             let nextOff  = UInt64(off_proc_p_list_le_next)
-             let pidOff   = UInt64(off_proc_p_pid)
-             let proRoOff = UInt64(off_proc_p_proc_ro)
-             var ptr      = ds_get_our_proc()
-             var seen     = Set<UInt64>()
-             while ptr != 0 && !seen.contains(ptr) && seen.count < 2048 {
-                 seen.insert(ptr)
-                 let kpid = Int32(bitPattern: mgr.kread32(address: ptr + pidOff))
-                 if kpid == pid {
-                     let proc_ro = mgr.kread64(address: ptr + proRoOff)
-                     guard proc_ro != 0 else {
-                         return .fail("proc-cred: proc_ro is null for pid \(pid)")
+             let kaddr = procbypid(pid_t(pid))
+             guard kaddr != 0 else {
+                 return .fail("proc-cred: pid \(pid) not found in kernel allproc")
+             }
+
+             let procROOffsets:  [UInt64] = [0x18, 0x20, 0x28, 0x30]
+             let ucredROOffsets: [UInt64] = [0x08, 0x10, 0x18, 0x20]
+             let credBaseOffsets:[UInt64] = [0x18, 0x20]
+
+             var bestProcRO: UInt64 = 0
+             var bestUcred:  UInt64 = 0
+             var bestBase:   UInt64 = 0x18
+             var bestScore = -1
+
+             for pro in procROOffsets {
+                 let proc_ro = mgr.kread64(address: kaddr + pro)
+                 guard proc_ro != 0 else { continue }
+                 for uco in ucredROOffsets {
+                     let ucred = mgr.kread64(address: proc_ro + uco)
+                     guard ucred != 0 else { continue }
+                     for cBase in credBaseOffsets {
+                         let c_uid = mgr.kread32(address: ucred + cBase)
+                         let c_gid = mgr.kread32(address: ucred + cBase + 0x0C)
+                         let c_ng  = mgr.kread32(address: ucred + cBase + 0x18)
+                         var score = 0
+                         if c_uid  < 100_000 { score += 10 }
+                         if c_gid  < 100_000 { score += 10 }
+                         if c_ng <= 16       { score += 200 }
+                         else if c_ng > 1000 { score -= 100 }
+                         if score > bestScore {
+                             bestScore = score; bestProcRO = proc_ro
+                             bestUcred = ucred; bestBase = cBase
+                         }
                      }
-                     let ucred = mgr.kread64(address: proc_ro + UInt64(off_proc_ro_p_ucred))
-                     guard ucred != 0 else {
-                         return .fail("proc-cred: ucred is null for pid \(pid)")
-                     }
-                     // XNU kauth_cred layout — stable iOS 16-18.
-                     // Confirmed: off_ucred_cr_label=0x78 places cr_posix at +0x18:
-                     //   +0x18 cr_uid (effective)  +0x1c cr_ruid  +0x20 cr_svuid
-                     //   +0x24 cr_ngroups(short)   +0x28 cr_groups[16]
-                     //   +0x68 cr_rgid             +0x6c cr_svgid
-                     let cr_uid   = mgr.kread32(address: ucred + 0x18)
-                     let cr_ruid  = mgr.kread32(address: ucred + 0x1c)
-                     let cr_svuid = mgr.kread32(address: ucred + 0x20)
-                     let cr_rgid  = mgr.kread32(address: ucred + 0x68)
-                     let cr_svgid = mgr.kread32(address: ucred + 0x6c)
-                     return .ok("""
+                 }
+             }
+
+             guard bestUcred != 0 else {
+                 return .fail("proc-cred: could not locate valid ucred for pid \(pid)")
+             }
+
+             let ucred = bestUcred
+             let b = bestBase
+             let cr_uid   = mgr.kread32(address: ucred + b)
+             let cr_ruid  = mgr.kread32(address: ucred + b + 0x04)
+             let cr_svuid = mgr.kread32(address: ucred + b + 0x08)
+             let cr_gid   = mgr.kread32(address: ucred + b + 0x0C)
+             let cr_rgid  = mgr.kread32(address: ucred + b + 0x10)
+             let cr_svgid = mgr.kread32(address: ucred + b + 0x14)
+
+             return .ok("""
    pid   : \(pid)
    uid   : \(cr_uid) (effective)
    ruid  : \(cr_ruid) (real)
    svuid : \(cr_svuid) (saved)
-   gid   : \(cr_rgid) (effective/real)
+   gid   : \(cr_gid) (effective)
+   rgid  : \(cr_rgid) (real)
    svgid : \(cr_svgid) (saved)
    ucred : 0x\(String(format: "%016llx", ucred))
+   layout: score=\(bestScore) (dynamic probe)
    [source: kernel ucred — iOS blocked proc_pidinfo]
  """)
-                 }
-                 ptr = mgr.kread64(address: ptr + nextOff)
-             }
-             return .fail("proc-cred: pid \(pid) not found in allproc (proc_pidinfo also blocked)")
          }
 
-        OmegaCore.register("proc-csflags") { arg, mgr in
-            guard mgr.dsready else { return .fail("proc-csflags: exploit not ready") }
-            guard let pid = Int32(arg.trimmingCharacters(in: .whitespaces)) else {
-                return .fail("proc-csflags: usage: proc-csflags <pid>")
-            }
-            let flags = readCSFlags(pid: pid, mgr: mgr)
-            return .ok(String(format: "pid %d  cs_flags = 0x%08x  [%@]", pid, flags, describeCSFlags(flags)))
-        }
-
-        OmegaCore.register("proc-csflags-set") { arg, mgr in
-            guard mgr.dsready else { return .fail("proc-csflags-set: exploit not ready") }
-            let parts = arg.split(separator: " ").map { String($0) }
-            guard parts.count == 2,
-                  let pid = Int32(parts[0]),
-                  let flags = parseAddr(parts[1]) else {
-                return .fail("proc-csflags-set: usage: proc-csflags-set <pid> <hex_flags>\nexample: proc-csflags-set 1234 0x2600")
-            }
-            let ok = writeCSFlags(pid: pid, flags: UInt32(flags & 0xFFFFFFFF), mgr: mgr)
-            return ok
-                ? .ok(String(format: "set cs_flags = 0x%08x on pid %d", UInt32(flags), pid))
-                : .fail("proc-csflags-set: failed — proc not found in kernel or offset wrong")
-        }
-
-        OmegaCore.register("proc-entitlements") { arg, mgr in
+         OmegaCore.register("proc-entitlements") { arg, mgr in
             guard let pid = Int32(arg.trimmingCharacters(in: .whitespaces)) else {
                 return .fail("proc-entitlements: usage: proc-entitlements <pid>")
             }
 
-            // proc_name has broader access than proc_pidinfo(BSDINFO) for system procs
-            var nameBuf = [CChar](repeating: 0, count: 256)
-            proc_name(pid, &nameBuf, 256)
-            let name = String(cString: nameBuf)
+            // ── SURGICAL FIX: Get name from kernel (proc_name blocked on iOS 18 system procs)
+            var name = ""
+            if mgr.dsready && mgr.hasOffsets {
+                let kaddr = procbypid(pid_t(pid))
+                if kaddr != 0 {
+                    for off: UInt64 in [0x268, 0x2d0, 0x56c] {
+                        var buf = [UInt8](repeating: 0, count: 17)
+                        ds_kreadbuf(kaddr + off, &buf, 16)
+                        let s = String(bytes: buf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
+                        if !s.isEmpty { name = s; break }
+                    }
+                }
+            }
+            if name.isEmpty {
+                var nameBuf = [CChar](repeating: 0, count: 256)
+                proc_name(pid, &nameBuf, 256)
+                name = String(cString: nameBuf)
+            }
             guard !name.isEmpty else {
                 return .fail("proc-entitlements: no process with pid \(pid)")
             }
 
-            // proc_pidpath often succeeds even when proc_pidinfo is blocked
+            // Try proc_pidpath first
             var pathBuf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
             let pathLen = proc_pidpath(pid, &pathBuf, UInt32(MAXPATHLEN))
 
             if pathLen > 0 {
                 let binPath = String(cString: pathBuf)
-
-                // Sandbox read first, then VFS fallback
                 let binData: Data? = (try? Data(contentsOf: URL(fileURLWithPath: binPath)))
                     ?? mgr.vfsread(path: binPath, maxSize: 8 * 1024 * 1024)
-
                 if let data = binData, let range = findEntitlements(in: data) {
                     let entsData = data.subdata(in: range)
-                    if let text = santanderfs.plisttext(data: entsData)
-                        ?? santanderfs.textdecode(data: entsData) {
-                        return .ok("Entitlements for \(name) (\(pid)):\n\(binPath)\n\n\(text)")
+                    if let text = santanderfs.plisttext(data: entsData) ?? santanderfs.textdecode(data: entsData) {
+                        return .ok("proc-entitlements: \(name) (\(pid)):\n\(binPath)\n\n\(text)")
                     }
                 }
                 return .ok("proc-entitlements: \(name) (\(pid))\nbinary: \(binPath)\n(no embedded entitlements — may use implicit entitlements)")
             }
 
-            return .ok("proc-entitlements: \(name) (\(pid))\n(binary path not accessible — use \'app-entitlements <bundleId>\' for user apps)")
+            // ── Kernel fallback: csops CS_OPS_ENTITLEMENTS_BLOB ──
+            var csBuf = [UInt8](repeating: 0, count: 65536)
+            let csRet = csops(pid_t(pid), 7, &csBuf, 65536)
+            if csRet == 0 {
+                let data = Data(csBuf)
+                if let text = santanderfs.plisttext(data: data) ?? santanderfs.textdecode(data: data) {
+                    return .ok("proc-entitlements: \(name) (\(pid))\n[source: csops CS_OPS_ENTITLEMENTS_BLOB]\n\n\(text)")
+                }
+            }
+
+            return .ok("proc-entitlements: \(name) (\(pid))\n(binary path not accessible — csops ret=\(csRet))")
         }
 
         OmegaCore.register("proc-open-files") { arg, _ in
