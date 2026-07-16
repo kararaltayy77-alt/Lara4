@@ -75,16 +75,24 @@ final class OmegaCore {
             return .fail("\(key): command not found — type 'help' for full list (\(registeredCount) commands loaded)")
         }
 
-        // ── SMART SAFETY LAYER — only block 100% crash scenarios ───────────
+        // ── SURGICAL SAFETY LAYER — examine before cutting ──────────────────
         let safety = CommandSafetyLayer.shared.preflight(command: key, arg: arg, mgr: mgr)
         switch safety {
-        case .blocked(let msg):
-            CommandLogger.shared.log(key, status: "safety-blocked", duration: 0)
-            return .fail("SAFETY BLOCKED: \(msg)")
-        case .warning(let msg):
+        case .stopAndExplain(let msg):
+            CommandLogger.shared.log(key, status: "safety-stopped", duration: 0)
+            return .fail("\n🛡️ SURGICAL SAFETY CHECK:
+" + msg + "
+
+Command NOT executed. Review the analysis above.")
+        case .proceedWithNote(let msg):
             let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
             let validated = CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr)
-            return .ok("SAFETY: \(msg) | " + validated)
+            return .ok("\n🛡️ SURGICAL SAFETY CHECK:
+" + msg + "
+
+" + String(repeating: "─", count: 50) + "
+RESULT:
+" + validated)
         case .safe:
             let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
             return .ok(CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr))
