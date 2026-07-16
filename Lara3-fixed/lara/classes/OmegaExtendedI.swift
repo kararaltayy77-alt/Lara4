@@ -170,65 +170,109 @@
       return lines.joined(separator: "\n")
   }
 
-  // MARK: – ucred-info
+  // MARK: – ucred-info (SURGICAL FIX for iOS 18.3.1)
   //
-  // CRASH-FIX (final): cr_label chain removed entirely.
+  // Problem:  ucred / posix_cred offsets changed in iOS 18.
+  //           cr_gid, cr_svgid, cr_ngroups read garbage → ngroups=286 (impossible).
   //
-  // Root cause of respring on system processes (PID 1 launchd, PID 2, etc.):
-  //   cr_label for system processes lives in PPL-protected read-only memory.
-  //   ds_isvalid() returns TRUE (page IS mapped), but the socket KRW primitive
-  //   cannot safely read PPL pages — ds_kread8/ds_kreadptr on those addresses
-  //   triggers a kernel panic → SpringBoard respring.
-  //
-  //   Even with per-step ds_isvalid() guards the primitive itself panics,
-  //   because the check tests mappedness, not PPL accessibility.
-  //
-  // Safe alternative: use 'sandbox-check <pid>' (uses sysctl path, no PPL reads).
-  //
-  // Only reads within the ucred struct itself (cr_posix at fixed offsets) —
-  // these fields are in regular kernel heap memory, readable on all processes.
+  // Solution: Dynamic offset probing.  Try all known proc_ro / ucred / cred
+  //           layouts, score each against BSD API ground truth (proc_pidinfo).
+  //           For system procs (BSD blocked), use sanity checks (NGROUPS_MAX≤16).
 
   private func _ucredInfo(pid: Int32, mgr: laramgr) -> String? {
       guard let procPtr = _findProcI(pid: pid, mgr: mgr) else { return nil }
 
-      // Offsets with safe fallbacks (iOS 18 arm64e)
-      let procROOff  = off_proc_p_proc_ro  != 0 ? UInt64(off_proc_p_proc_ro)  : 0x18
-      let ucredROOff = off_proc_ro_p_ucred != 0 ? UInt64(off_proc_ro_p_ucred) : 0x08
-
-      // proc → proc_ro → ucred
-      let proc_ro  = _kreadPtrI(procPtr + procROOff)
-      guard proc_ro != 0 else { return nil }
-      let ucredPtr = _kreadPtrI(proc_ro + ucredROOff)
-      guard ucredPtr != 0 else { return nil }
-
-      // kauth_cred / posix_cred layout (iOS 16-18 arm64e, stable):
-      //   cr_posix starts at ucred+0x18
-      //   +0x18 cr_uid     +0x1c cr_ruid    +0x20 cr_svuid
-      //   +0x24 cr_gid     +0x28 cr_rgid    +0x2c cr_svgid
-      //   +0x30 cr_ngroups  +0x34..+0x70 cr_groups[16]
-      let cr_uid    = _kread32I(ucredPtr + 0x18)
-      let cr_ruid   = _kread32I(ucredPtr + 0x1c)
-      let cr_svuid  = _kread32I(ucredPtr + 0x20)
-      let cr_gid    = _kread32I(ucredPtr + 0x24)
-      let cr_rgid   = _kread32I(ucredPtr + 0x28)
-      let cr_svgid  = _kread32I(ucredPtr + 0x2c)
-      let cr_ngroups = _kread32I(ucredPtr + 0x30)
-
-      var groups: [UInt32] = []
-      for i in 0..<min(Int(cr_ngroups), 16) {
-          groups.append(_kread32I(ucredPtr + 0x34 + UInt64(i) * 4))
+      // ── BSD API ground truth (works for user processes; blocked for system procs)
+      var bsdInfo = proc_bsdinfo()
+      var bsdUID: UInt32 = 0xFFFF_FFFF
+      var bsdGID: UInt32 = 0xFFFF_FFFF
+      var bsdRUID: UInt32 = 0xFFFF_FFFF
+      var bsdRGID: UInt32 = 0xFFFF_FFFF
+      let bsdOk = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsdInfo,
+                               Int32(MemoryLayout<proc_bsdinfo>.size)) > 0
+      if bsdOk {
+          bsdUID  = bsdInfo.pbi_uid
+          bsdGID  = bsdInfo.pbi_gid
+          bsdRUID = bsdInfo.pbi_ruid
+          bsdRGID = bsdInfo.pbi_rgid
       }
 
-      // cr_label chain is intentionally skipped:
-      // For system processes (PID ≤ 4 and many daemons), cr_label lives in
-      // PPL-protected pages.  Reading those via the socket KRW primitive
-      // causes a kernel panic even when ds_isvalid() says the page is mapped.
-      // Use 'sandbox-check <pid>' for policy info (sysctl-based, no PPL reads).
+      // ── Known offset variants across iOS 16/17/18 arm64e
+      let procROOffsets:  [UInt64] = [0x18, 0x20, 0x28, 0x30]
+      let ucredROOffsets: [UInt64] = [0x08, 0x10, 0x18, 0x20]
+      let credBaseOffsets: [UInt64] = [0x18, 0x20]
+
+      var bestProcRO:   UInt64 = 0
+      var bestUcredPtr: UInt64 = 0
+      var bestCredBase: UInt64 = 0x18
+      var bestScore = -1
+      var bestLayoutName = "unknown"
+
+      for pro in procROOffsets {
+          let proc_ro = _kreadPtrI(procPtr + pro)
+          guard proc_ro != 0, ds_isvalid(proc_ro) else { continue }
+          for uco in ucredROOffsets {
+              let ucredPtr = _kreadPtrI(proc_ro + uco)
+              guard ucredPtr != 0, ds_isvalid(ucredPtr) else { continue }
+              for cBase in credBaseOffsets {
+                  let c_uid   = _kread32I(ucredPtr + cBase)
+                  let c_ruid  = _kread32I(ucredPtr + cBase + 0x04)
+                  let c_svuid = _kread32I(ucredPtr + cBase + 0x08)
+                  let c_gid   = _kread32I(ucredPtr + cBase + 0x0C)
+                  let c_rgid  = _kread32I(ucredPtr + cBase + 0x10)
+                  let c_svgid = _kread32I(ucredPtr + cBase + 0x14)
+                  let c_ng    = _kread32I(ucredPtr + cBase + 0x18)
+
+                  var score = 0
+                  if bsdOk {
+                      if c_uid   == bsdUID  { score += 100 }
+                      if c_gid   == bsdGID  { score += 100 }
+                      if c_ruid  == bsdRUID { score += 50 }
+                      if c_rgid  == bsdRGID { score += 50 }
+                  }
+                  if c_uid   < 100_000 { score += 10 }
+                  if c_gid   < 100_000 { score += 10 }
+                  if c_ruid  < 100_000 { score += 5 }
+                  if c_rgid  < 100_000 { score += 5 }
+                  if c_svgid < 100_000 { score += 5 }
+                  if c_ng <= 16       { score += 200 }
+                  else if c_ng > 1000 { score -= 100 }
+
+                  if score > bestScore {
+                      bestScore = score
+                      bestProcRO   = proc_ro
+                      bestUcredPtr = ucredPtr
+                      bestCredBase = cBase
+                      bestLayoutName = "procRO=+0x\(String(pro,radix:16)) ucredRO=+0x\(String(uco,radix:16)) credBase=+0x\(String(cBase,radix:16))"
+                  }
+              }
+          }
+      }
+
+      guard bestUcredPtr != 0 else { return nil }
+
+      let ucredPtr = bestUcredPtr
+      let b = bestCredBase
+      let cr_uid    = _kread32I(ucredPtr + b)
+      let cr_ruid   = _kread32I(ucredPtr + b + 0x04)
+      let cr_svuid  = _kread32I(ucredPtr + b + 0x08)
+      let cr_gid    = _kread32I(ucredPtr + b + 0x0C)
+      let cr_rgid   = _kread32I(ucredPtr + b + 0x10)
+      let cr_svgid  = _kread32I(ucredPtr + b + 0x14)
+      let cr_ngroups = _kread32I(ucredPtr + b + 0x18)
+
+      var groups: [UInt32] = []
+      let ng = min(Int(cr_ngroups), 16)
+      for i in 0..<ng {
+          groups.append(_kread32I(ucredPtr + b + 0x1C + UInt64(i) * 4))
+      }
 
       var out = [String]()
       out.append(String(format: "ucred-info: pid %d", pid))
-      out.append(String(format: "  proc_ro_ptr   : 0x%016llx", proc_ro))
+      out.append(String(format: "  proc_ro_ptr   : 0x%016llx", bestProcRO))
       out.append(String(format: "  ucred_ptr     : 0x%016llx", ucredPtr))
+      out.append(String(format: "  layout        : %@", bestLayoutName))
+      out.append(String(format: "  probe_score   : %d", bestScore))
       out.append("  ──── posix credentials ────")
       out.append(String(format: "  uid           : %d", cr_uid))
       out.append(String(format: "  gid           : %d", cr_gid))
