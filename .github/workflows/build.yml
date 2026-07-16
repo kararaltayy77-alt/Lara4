@@ -55,51 +55,46 @@ jobs:
           path: Lara3-fixed/build/xcodebuild.log
           if-no-files-found: ignore
 
-      - name: Upload release IPA
-        if: github.event_name != 'pull_request'
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-ipa
           path: Lara3-fixed/build/lara.ipa
 
-  release:
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download IPA artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: release-ipa
-          path: build/
-
-      - name: Get recent commits
-        run: |
-          COMMITS=$(git log --since='24 hours ago' --pretty=format:'- %h %s (%an)')
-          if [ -z "$COMMITS" ]; then
-            COMMITS=$(git log -5 --pretty=format:'- %h %s (%an)')
-          fi
-          echo "COMMITS<<EOF" >> $GITHUB_ENV
-          echo "$COMMITS" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-      - name: Update nightly release
+      - name: Publish nightly release
+        if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view nightly >/dev/null 2>&1 || \
-            gh release create nightly \
-              --title 'Nightly' \
-              --notes 'Lara4 nightly build' \
+          set -euo pipefail
+
+          # Recent commits
+          COMMITS=$(git log --since='24 hours ago' --pretty=format:'- %h %s (%an)' 2>/dev/null || true)
+          [ -z "$COMMITS" ] && COMMITS=$(git log -5 --pretty=format:'- %h %s (%an)')
+
+          # Write release notes to temp file (avoids shell quoting issues)
+          NOTES_FILE=$(mktemp /tmp/notes.XXXXXX.md)
+          printf '## Lara4 Nightly Build\n\n' > "$NOTES_FILE"
+          printf '**Session Stability:** Self-healing KRW with health monitoring\n' >> "$NOTES_FILE"
+          printf '**Entitlements:** no-sandbox + proc_info-allow embedded via ldid\n\n' >> "$NOTES_FILE"
+          printf '### Recent commits\n' >> "$NOTES_FILE"
+          printf '%s\n' "$COMMITS" >> "$NOTES_FILE"
+
+          # Create or update nightly release
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly \
+              --title "Nightly ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
+              --notes-file "$NOTES_FILE" \
               --prerelease
-          gh release edit nightly \
-            --title "Nightly ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
-            --notes "## Lara4 Nightly Build\n\n**Session Stability:** Self-healing KRW with health monitoring\n**Entitlements:** no-sandbox + proc_info-allow embedded via ldid\n\n### Recent commits\n${COMMITS}" \
-            --prerelease
-          gh release upload nightly build/lara.ipa --clobber
+          else
+            gh release create nightly \
+              --title "Nightly ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease
+          fi
+
+          # Upload IPA — clobber replaces existing asset
+          gh release upload nightly Lara3-fixed/build/lara.ipa --clobber
+
+          rm -f "$NOTES_FILE"
+          echo "[✓] Nightly release updated"
