@@ -279,26 +279,7 @@
           let ucredUID = bestUcred != 0 ? ds_kread32(bestUcred + bestBase) : 0
           let ucredGID = bestUcred != 0 ? ds_kread32(bestUcred + bestBase + 0x0C) : 0
 
-          return .ok(String(format:
-              "proc-info: %@ (pid %d)
-" +
-              "  kaddr        : 0x%016llx
-" +
-              "  proc_ro_ptr  : 0x%016llx
-" +
-              "  ucred_ptr    : 0x%016llx
-" +
-              "  ucred_uid    : %d
-" +
-              "  ucred_gid    : %d
-" +
-              "  cs_flags     : 0x%08x
-" +
-              "  cs_flags_str : %@
-" +
-              "  probe_score  : %d (dynamic)",
-              arg, pid, kaddr, bestProcRO, bestUcred, ucredUID, ucredGID,
-              csFlags, _csDescription(csFlags), bestScore))
+          return .ok(String(format: "proc-info: %@ (pid %d)\n  kaddr        : 0x%016llx\n  proc_ro_ptr  : 0x%016llx\n  ucred_ptr    : 0x%016llx\n  ucred_uid    : %d\n  ucred_gid    : %d\n  cs_flags     : 0x%08x\n  cs_flags_str : %@\n  probe_score  : %d (dynamic)", arg, pid, kaddr, bestProcRO, bestUcred, ucredUID, ucredGID, csFlags, _csDescription(csFlags), bestScore))
       }
 
       OmegaCore.register("thread-list") { rawArg, mgr in
@@ -469,17 +450,8 @@
               let rb = ds_kread32(ucredPtr + off)
               results.append(String(format: "  %@: %u → %u %@", fname, old, rb, rb == 0 ? "✔" : "✖"))
           }
-          return .ok("inject-root: \(arg) (pid \(pid))
-" +
-                     "  proc_ro_ptr : " + String(format: "0x%016llx
-", bestProcRO) +
-                     "  ucred_ptr   : " + String(format: "0x%016llx
-", ucredPtr) +
-                     "  layout      : score=\(bestScore) (dynamic probe)
-" +
-                     results.joined(separator: "
-") + "
-")
+          let out = "inject-root: \(arg) (pid \(pid))\n  proc_ro_ptr : \(String(format: "0x%016llx", bestProcRO))\n  ucred_ptr   : \(String(format: "0x%016llx", ucredPtr))\n  layout      : score=\(bestScore) (dynamic probe)\n" + results.joined(separator: "\n")
+          return .ok(out)
       }
 
       OmegaCore.register("pivot-status") { _, mgr in
