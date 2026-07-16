@@ -78,7 +78,30 @@ final class OmegaCore {
             return .fail("\(key): command not found — type 'help' for full list  (\(registeredCount) commands loaded)")
         }
 
-        return _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
+        // ── SURGICAL SAFETY LAYER — pre-flight validation ──────────────────
+        let safety = CommandSafetyLayer.shared.preflight(command: key, arg: arg, mgr: mgr)
+        switch safety {
+        case .blocked(let msg):
+            CommandLogger.shared.log(key, status: "safety-blocked", duration: 0)
+            return .fail("🛡️ \(msg)")
+        case .dangerous(let msg):
+            // Proceed but prepend warning
+            let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
+            let validated = CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr)
+            return .ok("🛡️ SAFETY WARNING:
+" + msg + "
+" + String(repeating: "─", count: 50) + "
+" + validated)
+        case .warning(let msg):
+            let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
+            let validated = CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr)
+            return .ok("🛡️ \(msg)
+" + String(repeating: "─", count: 50) + "
+" + validated)
+        case .safe:
+            let result = _safeExecute(key: key, handler: handler, arg: arg, mgr: mgr)
+            return .ok(CommandSafetyLayer.shared.postflight(command: key, output: result.output, mgr: mgr))
+        }
     }
 
     // ── Crash-protected execution with 30 s timeout ────────────────────────
