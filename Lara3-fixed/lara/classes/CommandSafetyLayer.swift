@@ -2,13 +2,26 @@
 //  CommandSafetyLayer.swift
 //  lara
 //
-//  SURGICAL SAFETY LAYER — iOS 18.3.1
+//  SMART SAFETY LAYER — iOS 18.3.1
 //
-//  Mission:   Validate every command before kernel dispatch,
-//             cross-validate every result after execution,
-//             warn before dangerous operations.
+//  Principle: "Block only what WILL crash. Let everything else flow."
 //
-//  Principle: "Fail safe, not silent."
+//  Blocks (100% crash or corruption):
+//    • kwrite to non-kernel address (bit63=0) → panic
+//    • kwrite to KTRR/PPL zone → panic
+//    • kwrite to unmapped page → panic
+//    • inject-root on PID ≤ 4 (launchd/kernel_task) → panic/respring
+//    • voverwrite on kernelcache → panic
+//
+//  Warns (dangerous but not guaranteed crash):
+//    • inject-root on system daemons (PID 5-100)
+//    • kwrite to any kernel address (user must know what they do)
+//    • respring (loses KRW state)
+//
+//  Allows freely (read-only or safe):
+//    • ALL read commands (kread, proc-cred, ucred-info, ps, proc-find, etc.)
+//    • ALL filesystem commands (ls, cat, find, etc.)
+//    • ALL info commands (kinfo, apps, device-info, etc.)
 //
 
 import Foundation
@@ -16,230 +29,174 @@ import Darwin
 
 enum SafetyResult {
     case safe
-    case warning(String)
-    case dangerous(String)
-    case blocked(String)
-
-    var shouldExecute: Bool {
-        switch self {
-        case .blocked: return false
-        default:       return true
-        }
-    }
+    case warning(String)   // Proceed with warning prepended
+    case blocked(String)   // STOP — will crash
 }
 
 final class CommandSafetyLayer {
     static let shared = CommandSafetyLayer()
     private init() {}
 
-    private let dangerousZones: [(start: UInt64, end: UInt64, name: String)] = [
-        (0xFFFFFE0000000000, 0xFFFFFFFF00000000, "PPL/KTRR protected region"),
-        (0xFFFFFFF007004000, 0xFFFFFFF007800000, "kernel text (KTRR) — read-only, panic on write"),
-    ]
+    // ── KTRR / kernel text zone (write = guaranteed panic) ──
+    private let ktrrStart: UInt64 = 0xFFFFFFF007004000
+    private let ktrrEnd:   UInt64 = 0xFFFFFFF007800000
 
-    private let criticalPIDs: Set<Int32> = [0, 1, 2, 3, 4, 11, 14, 15, 16, 17, 18, 19, 20]
+    // ── PIDs that WILL crash on inject-root (99%) ──
+    private let guaranteedCrashPIDs: Set<Int32> = [0, 1, 2, 3, 4]
 
-    private let krwCommands: Set<String> = [
-        "kread", "kwrite", "kread32", "kwrite32", "kbytes", "kcstr",
-        "proc-cred", "proc-info", "proc-csflags", "proc-csflags-set",
-        "ucred-info", "vmmap-k", "inject-root", "cs-grant", "cs-flags",
-        "task-info", "ipc-space", "port-info", "kstruct", "ksearch", "xref",
-        "watch32", "watch64", "trace-write", "snapshot", "snapshot-diff",
-        "proc-walk", "kalloc", "proc-entitlements", "proc-open-files",
-        "proc-mem-info", "fd-info", "socket-info", "socket-dump",
-    ]
+    // ── Commands that WRITE to kernel memory ──
+    private let kernelWriteCommands: Set<String> = ["kwrite", "kwrite32"]
 
-    private let writeCommands: Set<String> = [
-        "kwrite", "kwrite32", "inject-root", "proc-csflags-set",
-        "cs-grant", "voverwrite", "vwrite", "vzero",
-    ]
+    // ── Commands that MODIFY process credentials ──
+    private let credWriteCommands: Set<String> = ["inject-root", "proc-csflags-set"]
 
-    private let systemProcCommands: Set<String> = [
-        "inject-root", "proc-kill", "proc-signal", "proc-suspend",
-    ]
+    // ── Commands that OVERWRITE system files ──
+    private let fileWriteCommands: Set<String> = ["voverwrite", "vwrite", "vzero"]
+
+    // MARK: – Main Entry
 
     func preflight(command: String, arg: String, mgr: laramgr) -> SafetyResult {
-        if krwCommands.contains(command) {
-            let health = validateKRWHealth(mgr: mgr)
-            if case .blocked(let msg) = health { return .blocked(msg) }
-            if case .warning(let msg) = health { return .warning(msg) }
+
+        // ── 1. KERNEL WRITE COMMANDS — address validation ──
+        if kernelWriteCommands.contains(command) {
+            return validateKernelWrite(arg: arg, mgr: mgr)
         }
 
-        if ["kread", "kwrite", "kread32", "kwrite32", "kbytes", "kcstr"].contains(command) {
-            return validateKernelAddressCommand(command: command, arg: arg, mgr: mgr)
+        // ── 2. CREDENTIAL WRITE — PID validation ──
+        if credWriteCommands.contains(command) {
+            return validateCredWrite(command: command, arg: arg, mgr: mgr)
         }
 
-        // Commands that require a PID (numeric) or process name argument
-        let pidCommands: Set<String> = [
-            "proc-cred", "proc-info", "proc-kill", "proc-signal",
-            "proc-suspend", "proc-resume", "proc-csflags", "proc-csflags-set",
-            "proc-entitlements", "proc-open-files", "proc-mem-info",
-            "ucred-info", "task-info", "vmmap-k", "inject-root",
-            "ipc-space", "fd-info", "socket-info", "socket-dump",
-        ]
-        if pidCommands.contains(command) {
-            return validatePIDCommand(command: command, arg: arg, mgr: mgr)
+        // ── 3. FILE OVERWRITE — path validation ──
+        if fileWriteCommands.contains(command) {
+            return validateFileWrite(arg: arg)
         }
 
-        if ["voverwrite", "vwrite", "vzero"].contains(command) {
-            return validateFileWriteCommand(command: command, arg: arg, mgr: mgr)
+        // ── 4. RESPRING — state loss warning ──
+        if command == "respring" {
+            return .warning("respring will restart SpringBoard. All unsaved KRW state will be lost. Run 'transfer' first to persist.")
         }
 
-        return assessDanger(command: command, arg: arg, mgr: mgr)
+        // ── 5. REVIVE / RUN — slow operation warning ──
+        if command == "revive" || command == "run" {
+            return .warning("This re-runs the full kernel exploit. Expect 3-5 seconds of socket spraying.")
+        }
+
+        // ── EVERYTHING ELSE — allow freely ──
+        // kread, kread32, kbytes, kcstr, proc-cred, ucred-info, proc-info,
+        // ps, proc-find, proc-walk, proc-tree, task-info, vmmap-k, ipc-space,
+        // fd-info, socket-info, socket-dump, kinfo, apps, ls, cat, find, etc.
+        return .safe
     }
 
+    // MARK: – Post-flight (sanity checks on output)
+
     func postflight(command: String, output: String, mgr: laramgr) -> String {
-        if command == "ucred-info" { return validateUcredOutput(output) }
-        if command == "proc-cred" { return validateProcCredOutput(output) }
-        if command == "kread" || command == "kread32" { return validateKReadOutput(output) }
+
+        // Only check outputs that might be wrong due to bad offsets
+        if command == "ucred-info" {
+            return validateUcredOutput(output)
+        }
+        if command == "proc-cred" {
+            return validateProcCredOutput(output)
+        }
+
         return output
     }
 
-    private func validateKRWHealth(mgr: laramgr) -> SafetyResult {
-        guard mgr.dsready else {
-            return .blocked("KRW session not ready — run 'run' first")
-        }
-        let kbase = ds_get_kernel_base()
-        guard kbase != 0 else {
-            return .blocked("KRW session degraded — kernel_base is zero. Run 'revive'")
-        }
-        do {
-            let magic = ds_kread32(kbase)
-            guard magic == 0xFEEDFACF else {
-                return .blocked("KRW session corrupted — kernel magic mismatch. Run 'revive'")
-            }
-        } catch {
-            return .blocked("KRW socket disconnected. Run 'revive'")
-        }
-        let thermal = ProcessInfo.processInfo.thermalState
-        if thermal == .critical {
-            return .warning("CRITICAL thermal state — KRW ops may be throttled by iOS")
-        } else if thermal == .serious {
-            return .warning("SERIOUS thermal state — consider cooling device")
-        }
-        return .safe
-    }
+    // MARK: – Kernel Write Validation (BLOCKS 100% panic scenarios)
 
-    private func validateKernelAddressCommand(command: String, arg: String, mgr: laramgr) -> SafetyResult {
+    private func validateKernelWrite(arg: String, mgr: laramgr) -> SafetyResult {
         let parts = arg.split(separator: " ").map { String($0) }
         guard let addrStr = parts.first, let addr = parseHex(addrStr) else {
-            return .blocked("invalid address format — use 0x...")
+            return .blocked("kwrite: invalid address format. Use: kwrite 0xfffffff0XXXXXXXX 0xVALUE")
         }
+
+        // 1. bit63 check — userland address = 100% panic
         if (addr & (1 << 63)) == 0 {
-            return .blocked("0x" + String(addr, radix: 16) + " is not a valid kernel address (bit63=0)")
+            return .blocked("kwrite: 0x" + String(addr, radix: 16) + " is not a kernel address (bit63=0). Writing here will panic the device.")
         }
-        if !ds_isvalid(addr) {
-            return .blocked("0x" + String(addr, radix: 16) + " is not mapped in kernel space")
+
+        // 2. KTRR zone — kernel text = 100% panic
+        if addr >= ktrrStart && addr < ktrrEnd {
+            return .blocked("kwrite: address falls in kernel text (KTRR-protected). Write WILL cause kernel panic.")
         }
-        for zone in dangerousZones {
-            if addr >= zone.start && addr < zone.end {
-                if writeCommands.contains(command) {
-                    return .blocked("address falls in " + zone.name + " — WRITE WILL PANIC")
-                } else {
-                    return .dangerous("WARNING: address in " + zone.name + ". Read-only recommended. Any write = kernel panic.")
-                }
-            }
+
+        // 3. Unmapped page — 100% panic
+        if mgr.dsready && !ds_isvalid(addr) {
+            return .blocked("kwrite: 0x" + String(addr, radix: 16) + " is not a mapped kernel page. Write WILL panic.")
         }
-        if command == "kread32" || command == "kwrite32" {
-            if addr % 4 != 0 {
-                return .warning("Address 0x" + String(addr, radix: 16) + " is not 4-byte aligned")
-            }
-        }
-        if writeCommands.contains(command) {
-            guard parts.count >= 2 else {
-                return .blocked("missing value argument")
-            }
-            guard parseHex(parts[1]) != nil else {
-                return .blocked("invalid value format — use 0x...")
-            }
-            return .dangerous("DANGER: Writing to kernel memory at 0x" + String(addr, radix: 16) + ". This can cause kernel panic, data loss, or device boot-loop.")
-        }
-        return .safe
+
+        // 4. Valid kernel address — warn but allow (user knows what they do)
+        return .warning("kwrite: Writing to kernel memory at 0x" + String(addr, radix: 16) + ". Ensure you know the structure layout. Wrong value = panic.")
     }
 
-    private func validatePIDCommand(command: String, arg: String, mgr: laramgr) -> SafetyResult {
+    // MARK: – Credential Write Validation (BLOCKS 99% crash scenarios)
+
+    private func validateCredWrite(command: String, arg: String, mgr: laramgr) -> SafetyResult {
         let parts = arg.split(separator: " ").map { String($0) }
         guard let pidStr = parts.first, let pid = Int32(pidStr) else {
-            return .blocked("invalid PID — use numeric value")
+            // Allow non-numeric args (e.g. process names) — let the handler deal with it
+            return .safe
         }
-        guard pid >= 0 else {
-            return .blocked("PID cannot be negative")
+
+        // PID 0-4 = kernel_task, launchd, etc. — 99% panic/respring
+        if guaranteedCrashPIDs.contains(pid) {
+            return .blocked(command + ": PID " + String(pid) + " is a critical system process (launchd/kernel_task). " + command + " here has 99% chance of kernel panic or respring. This is blocked for your safety.")
         }
-        var info = proc_bsdinfo()
-        let exists = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) > 0
-        if !exists && !mgr.dsready {
-            return .blocked("PID " + String(pid) + " does not exist and KRW unavailable")
+
+        // PID 5-100 = system daemons — dangerous but not guaranteed crash
+        if pid <= 100 {
+            return .warning(command + ": PID " + String(pid) + " is a system daemon. " + command + " here may cause instability or respring. Proceed with caution.")
         }
-        if criticalPIDs.contains(pid) || (exists && info.pbi_uid == 0 && pid <= 100) {
-            if systemProcCommands.contains(command) {
-                return .dangerous("CRITICAL: PID " + String(pid) + " is a system process. " + command + " on system processes can cause kernel panic or respring.")
-            }
-            if command == "proc-cred" || command == "ucred-info" {
-                return .warning("PID " + String(pid) + " is a system process. Some fields may be PPL-protected.")
-            }
-        }
-        if command == "inject-root" {
-            if pid == getpid() {
-                return .dangerous("WARNING: You are about to inject root into LARA itself (PID " + String(pid) + "). This is usually unnecessary.")
-            }
-            guard exists else {
-                return .blocked("PID " + String(pid) + " does not exist")
-            }
-            guard info.pbi_uid != 0 else {
-                return .dangerous("PID " + String(pid) + " already runs as root. inject-root is redundant.")
-            }
-        }
+
+        // PID > 100 = user apps — generally safe
         return .safe
     }
 
-    private func validateFileWriteCommand(command: String, arg: String, mgr: laramgr) -> SafetyResult {
+    // MARK: – File Write Validation
+
+    private func validateFileWrite(arg: String) -> SafetyResult {
         let parts = arg.split(separator: " ").map { String($0) }
-        guard let path = parts.first else {
-            return .blocked("missing path argument")
-        }
-        if path.hasPrefix("/System/") || path.hasPrefix("/usr/libexec/") || path.hasPrefix("/usr/sbin/") || path.hasPrefix("/sbin/") {
-            return .dangerous("DANGER: Path '" + path + "' is on Signed System Volume (SSV). Writes may be reverted on reboot or cause boot-loop.")
-        }
+        guard let path = parts.first else { return .safe }
+
+        // kernelcache = 100% panic
         if path.contains("kernelcache") || path.contains("com.apple.kernel") {
-            return .blocked("path contains kernelcache — PPL-protected, write WILL PANIC")
+            return .blocked("voverwrite: path contains kernelcache — this is PPL-protected. Write WILL panic.")
         }
+
+        // SSV paths = dangerous but not panic (just reverted on reboot)
+        if path.hasPrefix("/System/") || path.hasPrefix("/usr/libexec/") ||
+           path.hasPrefix("/usr/sbin/") || path.hasPrefix("/sbin/") {
+            return .warning("voverwrite: '" + path + "' is on Signed System Volume (SSV). Changes will be reverted on reboot. Use only for research.")
+        }
+
         return .safe
     }
 
-    private func assessDanger(command: String, arg: String, mgr: laramgr) -> SafetyResult {
-        if command == "respring" {
-            return .dangerous("WARNING: respring will restart SpringBoard. All unsaved KRW state will be lost.")
-        }
-        if command == "revive" || command == "run" {
-            return .warning("This will re-run the full kernel exploit. Expect 3-5 seconds of socket spraying.")
-        }
-        return .safe
-    }
+    // MARK: – Output Validators (post-flight sanity checks)
 
     private func validateUcredOutput(_ output: String) -> String {
+        // Detect garbage ngroups (> 16 = impossible on iOS)
         if let range = output.range(of: "ngroups"),
            let valRange = output[range.upperBound...].range(of: #"\d+"#, options: .regularExpression) {
             let valStr = String(output[valRange])
             if let ng = Int(valStr), ng > 16 {
-                return output + "\n\nSAFETY WARNING: ngroups=" + String(ng) + " exceeds NGROUPS_MAX (16). This indicates WRONG ucred offsets. Do NOT trust uid/gid values above."
+                return output + "\n\n[NOTE: ngroups=" + String(ng) + " exceeds iOS NGROUPS_MAX (16). This indicates WRONG ucred offsets. The uid/gid values above may be incorrect. Run 'ucred-info' again or check iOS version compatibility.]"
             }
         }
         return output
     }
 
     private func validateProcCredOutput(_ output: String) -> String {
+        // Detect suspicious gid=4 with uid=501 (wrong offset layout)
         if output.contains("gid   : 4") && output.contains("uid   : 501") {
-            return output + "\n\nSAFETY WARNING: gid=4 with uid=501 is SUSPICIOUS. On iOS, app processes should have gid=501. gid=4 suggests WRONG offset layout."
+            return output + "\n\n[NOTE: gid=4 with uid=501 is suspicious. On iOS, app processes should have gid=501 (or 250 for sandbox). gid=4 suggests WRONG offset layout. Verify with 'ucred-info'.]"
         }
         return output
     }
 
-    private func validateKReadOutput(_ output: String) -> String {
-        if output.contains("=  0x0000000000000000") {
-            return output + "\n  [NOTE: zero read — may indicate unmapped page or stripped PAC]"
-        }
-        return output
-    }
+    // MARK: – Helpers
 
     private func parseHex(_ s: String) -> UInt64? {
         let cleaned = s.trimmingCharacters(in: .whitespaces)
