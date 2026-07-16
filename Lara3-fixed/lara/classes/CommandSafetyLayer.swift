@@ -117,17 +117,28 @@ final class CommandSafetyLayer {
             return .blocked("kwrite: 0x" + String(addr, radix: 16) + " is not a kernel address (bit63=0). Writing here will panic the device.")
         }
 
-        // 2. KTRR zone — kernel text = 100% panic
+        // 2. Kernel base / Mach-O header — read-only = 100% panic
+        // The kernel base contains the Mach-O header and initial text segments.
+        // These are read-only even outside the KTRR zone on iOS 18.
+        let kbase = ds_get_kernel_base()
+        if kbase != 0 && addr >= kbase && addr < kbase + 0x100000 {
+            return .blocked("kwrite: address 0x" + String(addr, radix: 16) + " is within the kernel Mach-O header / text segment (read-only). Write WILL cause kernel panic. This includes kernel_base and all nearby pages.")
+        }
+
+        // 3. KTRR zone — kernel text = 100% panic
+        // Note: on iOS 18 with kernel slide, the actual text is at kbase + offset.
+        // The static ktrrStart/ktrrEnd may not cover the slid text.
+        // We already check kbase+0x100000 above, which covers most text.
         if addr >= ktrrStart && addr < ktrrEnd {
             return .blocked("kwrite: address falls in kernel text (KTRR-protected). Write WILL cause kernel panic.")
         }
 
-        // 3. Unmapped page — 100% panic
+        // 4. Unmapped page — 100% panic
         if mgr.dsready && !ds_isvalid(addr) {
             return .blocked("kwrite: 0x" + String(addr, radix: 16) + " is not a mapped kernel page. Write WILL panic.")
         }
 
-        // 4. Valid kernel address — warn but allow (user knows what they do)
+        // 5. Valid kernel address — warn but allow (user knows what they do)
         return .warning("kwrite: Writing to kernel memory at 0x" + String(addr, radix: 16) + ". Ensure you know the structure layout. Wrong value = panic.")
     }
 
