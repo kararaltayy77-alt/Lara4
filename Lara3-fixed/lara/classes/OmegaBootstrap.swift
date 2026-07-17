@@ -575,140 +575,73 @@ LARA Shell — full command reference (iSH-level access)
 OmegaCore.register("kinfo") { _, mgr in
             guard mgr.dsready else { return .fail("kinfo: exploit not ready — run 'run' first") }
 
-            var lines: [String] = []
-
-            // Device & Process Info (runtime — real device data)
             var sysInfo = utsname()
             uname(&sysInfo)
             let machine = withUnsafePointer(to: &sysInfo.machine) {
-                $0.withMemoryRebound(to: CChar.self, capacity: 1) {
-                    String(cString: $0)
-                }
+                $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
             }
-            let deviceName = UIDevice.current.name
-            let iosVersion = UIDevice.current.systemVersion
-            let pid = getpid()
-            lines.append(String(format: "[DEVICE]   %@ | iOS %@ | %@ | PID=%d",
-                deviceName, iosVersion, machine, pid))
-            lines.append("")
 
-            lines.append("=== KERNEL STATE DIAGNOSTIC ===")
-            lines.append("")
-
-            // 1. KRW Subsystem
             let krwReady = ds_is_ready()
-            let krwState = krwReady ? "OPERATIONAL" : "FAILED"
-            lines.append(String(format: "[KRW]      State: %-20@  Backend: kernel r/w via exploit primitive", krwState as NSString))
-
-            // 2. Pointer Integrity
             let kbase = ds_get_kernel_base()
             let kslide = ds_get_kernel_slide()
             let ourProc = ds_get_our_proc()
             let ourTask = ds_get_our_task()
             let rwPCB = ds_get_rw_socket_pcb()
-
-            let procState = (ourProc != 0 && (ourProc & 0xFFFF000000000000) != 0) ? "VALID" : "NULL/CORRUPT"
-            let taskState = (ourTask != 0 && (ourTask & 0xFFFF000000000000) != 0) ? "VALID" : "NULL/CORRUPT"
-            let kbaseState = (kbase != 0 && kbase & 0xFFF == 0) ? "VALID" : "INVALID"
-            let pcbState = rwPCB != 0 ? "VALID" : "NULL"
-
-            lines.append(String(format: "[PTR]      proc: %-20@  0x%012llx", procState as NSString, ourProc))
-            lines.append(String(format: "           task: %-20@  0x%012llx", taskState as NSString, ourTask))
-            lines.append(String(format: "           kbase: %-19@  0x%016llx", kbaseState as NSString, kbase))
-            lines.append(String(format: "           slide: %-19@  0x%016llx", (kslide != 0 ? "VALID" : "ZERO") as NSString, kslide))
-            lines.append(String(format: "           rwpcb: %-19@  0x%012llx", pcbState as NSString, rwPCB))
-
-            // 3. Privilege
             let uid = getuid()
-            let gid = getgid()
-            let euid = geteuid()
-            let privState = uid == 0 ? "ROOT" : (euid == 0 ? "ELEVATED (euid=0)" : "UNPRIVILEGED")
-            lines.append(String(format: "[PRIV]     Level: %-20@  uid=%d  gid=%d  euid=%d", privState as NSString, uid, gid, euid))
-
-            // 4. Protections
-            let hasPAC = true  // A12+ always armed
             let pplBypassed = ppl_is_bypassed()
             let pmOK = pm_fingerprint_ok()
             let amfiEnforce = amfi_get_mac_proc_enforce()
-
-            // FIX: 0xFFFFFFFF (-1) means READ FAILED, not "enforcing"
-            let amfiState: String
-            if amfiEnforce == 0xFFFFFFFF {
-                amfiState = "UNKNOWN ❌ (offset unreadable)"
-            } else if amfiEnforce == 0 {
-                amfiState = "DISABLED ✅"
-            } else {
-                amfiState = "ENFORCING ⚠️"
-            }
-
-            let pplState: String
-            if pplBypassed {
-                pplState = "BYPASSED ✅"
-            } else if pmOK {
-                pplState = "ENFORCED (physmap mapped) ⚠️"
-            } else {
-                pplState = "ENFORCED (physmap unavailable) ❌"
-            }
+            let offsetsOK = mgr.hasOffsets
 
             var ktrrActive = false
             let ktrrR = tp_ktrr_enforcement_detector(&ktrrActive)
-            let ktrrState = ktrrR.code == 0 ? (ktrrActive ? "ACTIVE ⚠️" : "INACTIVE ✅") : "UNKNOWN ❌"
+            let ktrrState = ktrrR.code == 0 ? (ktrrActive ? "ACTIVE" : "INACTIVE") : "UNKNOWN"
 
-            lines.append(String(format: "[PAC]      Status: %@", hasPAC ? "ARMED ⚠️" : "ABSENT ✅"))
-            lines.append(String(format: "[PPL]      Status: %@", pplState))
-            lines.append(String(format: "[KTRR]     Status: %@", ktrrState))
-            lines.append(String(format: "[AMFI]     Status: %@", amfiState))
-// 6. Offsets / Symbols
-            let offsetsOK = mgr.hasOffsets
-            let keyOff1 = off_proc_p_proc_ro
-            let keyOff2 = off_proc_ro_p_ucred
-            let keyOff3 = off_task_map
-            let symState = (keyOff1 != 0 && keyOff2 != 0 && keyOff3 != 0) ? "RESOLVED" : "PARTIAL"
+            let amfiStr = amfiEnforce == 0xFFFFFFFF ? "0xFFFFFFFF" : (amfiEnforce == 0 ? "0" : String(amfiEnforce))
+            let pplStr = pplBypassed ? "BYPASSED" : (pmOK ? "ENFORCED" : "ENFORCED")
+            let privStr = uid == 0 ? "root" : "user"
 
-            lines.append(String(format: "[OFFSETS]  State: %-20@  Resolver: %@", (offsetsOK ? "LOADED" : "MISSING") as NSString, symState))
-            if symState == "PARTIAL" {
-                lines.append(String(format: "           proc_ro=%u  ucred=%u  task_map=%u", keyOff1, keyOff2, keyOff3))
-            }
+            var lines: [String] = []
+            lines.append(String(format: "[DEVICE] %@ | iOS %@ | %@ | PID=%d",
+                UIDevice.current.name, UIDevice.current.systemVersion, machine, getpid()))
+            lines.append(String(format: "[KRW]    %@", krwReady ? "OPERATIONAL" : "FAILED"))
+            lines.append(String(format: "[PTR]    proc=%@ task=%@ kbase=%@ slide=%@",
+                ourProc != 0 ? "OK" : "FAIL",
+                ourTask != 0 ? "OK" : "FAIL",
+                kbase != 0 ? "OK" : "FAIL",
+                kslide != 0 ? "OK" : "FAIL"))
+            lines.append(String(format: "[PRIV]   uid=%d (%@)", uid, privStr))
+            lines.append(String(format: "[PAC]    ARMED"))
+            lines.append(String(format: "[PPL]    %@", pplStr))
+            lines.append(String(format: "[AMFI]   %@", amfiStr))
+            lines.append(String(format: "[KTRR]   %@", ktrrState))
+            lines.append(String(format: "[VFS]    %@", mgr.vfsready ? "MOUNTED" : "OFF"))
+            lines.append(String(format: "[SBX]    %@", mgr.sbxready ? "ESCAPED" : "CONFINED"))
+            lines.append(String(format: "[RC]     %@", mgr.rcready ? "ARMED" : "DISARMED"))
+            lines.append(String(format: "[KACCESS] %@", mgr.kaccessready ? "READY" : "OFF"))
+            lines.append("---")
 
-            // 7. Subsystems
-            lines.append(String(format: "[VFS]      State: %@", mgr.vfsready ? "MOUNTED" : "NOT MOUNTED"))
-            lines.append(String(format: "[SBX]      State: %@", mgr.sbxready ? "ESCAPED" : "CONFINED"))
-            lines.append(String(format: "[RC]       State: %@", mgr.rcready ? "ARMED" : "DISARMED"))
-            lines.append(String(format: "[KACCESS]  State: %@", mgr.kaccessready ? "READY" : (mgr.kaccesserror != nil ? "FAULT: \(mgr.kaccesserror!)" : "NOT READY")))
-
-            // 8. Actionable Summary
-            lines.append("")
-            lines.append("--- ASSESSMENT ---")
             if !krwReady {
-                lines.append("❌ KRW subsystem failed. Execute 'run' to re-exploit.")
+                lines.append("STATUS:  Run 'run'")
             } else if !offsetsOK {
-                lines.append("❌ Kernel offsets unresolved. Execute 'offsets' or 'fixoffsets'.")
+                lines.append("STATUS:  Run 'offsets'")
             } else if amfiEnforce == 0xFFFFFFFF {
-                lines.append("❌ AMFI status unreadable (mac_proc_enforce offset unknown).")
-                lines.append("   Run: offsets → fixoffsets → auto-ppl-breaker")
-                lines.append("   Or:  This iOS version may require updated offsets.")
+                lines.append("STATUS:  Run 'offsets' → 'fixoffsets'")
             } else if !pmOK && !pplBypassed {
-                lines.append("❌ PPL bypass prerequisites not met — Phase 1 failed.")
-                lines.append("   Phase 1 returned: -2 (precondition failed: mac_proc_enforce offset unknown)")
-                lines.append("   This is NOT 'impossible' — resolve offsets first, then retry.")
-                lines.append("   Run: offsets → fixoffsets → auto-ppl-breaker")
+                lines.append("STATUS:  Run 'auto-ppl-breaker'")
             } else if uid != 0 && !pplBypassed {
-                lines.append("⚠️  Unprivileged (uid=\(uid)). PPL active but bypass ready.")
-                lines.append("   Execute: auto-ppl-breaker")
+                lines.append("STATUS:  Run 'auto-ppl-breaker'")
             } else if uid == 0 && amfiEnforce != 0 {
-                lines.append("⚠️  Root acquired but AMFI enforcing.")
-                lines.append("   Execute: amfi-disable-globally")
+                lines.append("STATUS:  Run 'amfi-disable-globally'")
             } else if uid == 0 {
-                lines.append("✅ Fully privileged. AMFI disabled. Ready for operations.")
+                lines.append("STATUS:  Ready")
             } else {
-                lines.append("⚠️  Partial state. Review individual subsystem states above.")
+                lines.append("STATUS:  Check above")
             }
-            lines.append("=== END DIAGNOSTIC ===")
-        return .ok(lines.joined(separator: "\n"))
+
+            return .ok(lines.joined(separator: "\n"))
         }
-
-
-        OmegaCore.register("kread") { arg, mgr in
+OmegaCore.register("kread") { arg, mgr in
             guard mgr.dsready else { return .fail("kread: exploit not ready") }
             guard ds_is_ready() else { return .fail("kread: kernel r/w unavailable — revive session or re-run exploit") }
             guard let addr = parseAddr(arg) else {
