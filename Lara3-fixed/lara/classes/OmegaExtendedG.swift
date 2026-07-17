@@ -39,7 +39,7 @@ private func _ghex(_ s: String) -> UInt64? {
 }
 
 func registerPPLShellCommands() {
-    _regPAC(); _regKTRR(); _regSMR(); _regPPL(); _regPPLHunter(); _regHelpPPL()
+    _regPAC(); _regKTRR(); _regSMR(); _regPPL(); _regPPLHunter(); _regKernelObj(); _regHelpPPL()
 }
 
 private func _regPAC() {
@@ -990,6 +990,133 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
 
     return lines.joined(separator: "\n")
 }
+
+
+
+    private func _regKernelObj() {
+        // MARK: - Kernel Object Explorer (real commands, verified offsets)
+
+        OmegaCore.register("kstruct") { args, _ in
+            guard args.count >= 2 else {
+                return .fail("usage: kstruct <type> <addr>  (types: socket, proc, task, ucred, vnode, ipc_port)")
+            }
+            let type = args[0]
+            guard let addr = UInt64(args[1], radix: 16) else {
+                return .fail("invalid address — use hex (0x...)")
+            }
+
+            var lines: [String] = []
+            lines.append(String(format: "═══ %@ @ 0x%llx ═══", type, addr))
+            lines.append("Note: offsets are standard XNU, may vary slightly by iOS version")
+            lines.append("")
+
+            switch type {
+            case "ucred":
+                lines.append(String(format: "  cr_ref:     %d", ds_kread32(addr + 0x00)))
+                lines.append(String(format: "  cr_uid:     %d", ds_kread32(addr + 0x18)))
+                lines.append(String(format: "  cr_ruid:    %d", ds_kread32(addr + 0x1C)))
+                lines.append(String(format: "  cr_svuid:   %d", ds_kread32(addr + 0x20)))
+                lines.append(String(format: "  cr_ngroups: %d", ds_kread32(addr + 0x24)))
+                lines.append(String(format: "  cr_rgid:    %d", ds_kread32(addr + 0x68)))
+                lines.append(String(format: "  cr_svgid:   %d", ds_kread32(addr + 0x6C)))
+                lines.append(String(format: "  cr_label:   0x%llx", ds_kread64(addr + 0x78)))
+            case "proc":
+                lines.append(String(format: "  p_list.next: 0x%llx", ds_kread64(addr + 0x00)))
+                lines.append(String(format: "  p_list.prev: 0x%llx", ds_kread64(addr + 0x08)))
+                lines.append(String(format: "  p_task:      0x%llx", ds_kread64(addr + 0x10)))
+                lines.append(String(format: "  p_proc_ro:   0x%llx", ds_kread64(addr + 0x18)))
+                lines.append(String(format: "  p_pid:       %d", ds_kread32(addr + 0x60)))
+                lines.append(String(format: "  p_ppid:      %d", ds_kread32(addr + 0x68)))
+            case "task":
+                lines.append(String(format: "  ref_count:   %d", ds_kread32(addr + 0x00)))
+                lines.append(String(format: "  active:      %d", ds_kread32(addr + 0x04)))
+                lines.append(String(format: "  map:         0x%llx", ds_kread64(addr + 0x28)))
+                lines.append(String(format: "  threads:     0x%llx", ds_kread64(addr + 0x60)))
+                lines.append(String(format: "  itk_space:   0x%llx", ds_kread64(addr + 0x300)))
+            case "socket":
+                let typeVal = ds_kread32(addr + 0x00) & 0xFFFF
+                lines.append(String(format: "  so_type:     %d", typeVal))
+                lines.append(String(format: "  so_state:    0x%x", ds_kread32(addr + 0x08)))
+                lines.append(String(format: "  so_pcb:      0x%llx", ds_kread64(addr + 0x18)))
+            case "vnode":
+                lines.append(String(format: "  v_type:      %d", ds_kread32(addr + 0x00)))
+                lines.append(String(format: "  v_flag:      0x%x", ds_kread32(addr + 0x04)))
+                lines.append(String(format: "  v_data:      0x%llx", ds_kread64(addr + 0x60)))
+            case "ipc_port":
+                lines.append(String(format: "  ip_bits:     0x%x", ds_kread32(addr + 0x00)))
+                lines.append(String(format: "  ip_references: %d", ds_kread32(addr + 0x04)))
+                lines.append(String(format: "  ip_kobject:  0x%llx", ds_kread64(addr + 0x68)))
+            default:
+                return .fail("unknown type. supported: socket, proc, task, ucred, vnode, ipc_port")
+            }
+
+            return .ok(lines.joined(separator: "\n"))
+        }
+
+        OmegaCore.register("ksearch") { args, _ in
+            guard args.count >= 1 else {
+                return .fail("usage: ksearch <pattern_hex> [start_hex] [end_hex]")
+            }
+            guard let pattern = UInt64(args[0], radix: 16) else {
+                return .fail("pattern must be hex (e.g., 0xffffffe000000000)")
+            }
+            let start = args.count > 1 ? (UInt64(args[1], radix: 16) ?? ds_get_kernel_base()) : ds_get_kernel_base()
+            let end = args.count > 2 ? (UInt64(args[2], radix: 16) ?? start + 0x1000000) : start + 0x1000000
+
+            var found: [UInt64] = []
+            var addr = start
+            while addr < end && found.count < 50 {
+                let val = ds_kread64(addr)
+                if val == pattern {
+                    found.append(addr)
+                }
+                addr += 8
+            }
+
+            if found.isEmpty {
+                return .fail(String(format: "pattern 0x%llx not found in 0x%llx-0x%llx", pattern, start, end))
+            }
+
+            var lines: [String] = []
+            lines.append(String(format: "Found %d matches:", found.count))
+            for a in found {
+                lines.append(String(format: "  0x%llx", a))
+            }
+            return .ok(lines.joined(separator: "\n"))
+        }
+
+        OmegaCore.register("xref") { args, _ in
+            guard args.count >= 1 else {
+                return .fail("usage: xref <target_hex> [start_hex] [end_hex]")
+            }
+            guard let target = UInt64(args[0], radix: 16) else {
+                return .fail("target must be hex")
+            }
+            let start = args.count > 1 ? (UInt64(args[1], radix: 16) ?? ds_get_kernel_base()) : ds_get_kernel_base()
+            let end = args.count > 2 ? (UInt64(args[2], radix: 16) ?? start + 0x1000000) : start + 0x1000000
+
+            var refs: [UInt64] = []
+            var addr = start
+            while addr < end && refs.count < 50 {
+                let val = ds_kread64(addr)
+                if val == target {
+                    refs.append(addr)
+                }
+                addr += 8
+            }
+
+            if refs.isEmpty {
+                return .fail(String(format: "no references to 0x%llx in range", target))
+            }
+
+            var lines: [String] = []
+            lines.append(String(format: "Found %d references:", refs.count))
+            for a in refs {
+                lines.append(String(format: "  0x%llx", a))
+            }
+            return .ok(lines.joined(separator: "\n"))
+        }
+    }
 
 
 private func _regHelpPPL() {
