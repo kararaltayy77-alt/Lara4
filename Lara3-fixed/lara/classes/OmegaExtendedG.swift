@@ -421,7 +421,7 @@ OmegaCore.register("ppl-phase-report") { _, mgr in
         let p1Status: String
         switch p1 {
         case 0:  p1Status = "✅ pmap located"
-        case -2: p1Status = "❌ pmap not found (physmap fingerprint failed — device/iOS unsupported)"
+        case -2: p1Status = "❌ precondition failed: mac_proc_enforce offset unknown or pmap not mapped (run 'offsets' first)"
         case -1: p1Status = "❌ generic failure"
         default: p1Status = "❌ error code \(p1)"
         }
@@ -590,10 +590,10 @@ OmegaCore.register("ppl-write-bypass") { rawArg, mgr in
             lines.append("    1. physmap P1 OK → run ppl-phase-report")
             lines.append("    2. Try: auto-ppl-breaker")
         } else {
-            lines.append("    1. sandbox-complete-escape")
-            lines.append("    2. amfi-disable-globally")
-            lines.append("    3. set-all-ids-zero")
-            lines.append("    4. cs-remove-all-restrictions")
+            lines.append("    1. Run: offsets → fixoffsets (resolve mac_proc_enforce offset)")
+            lines.append("    2. Re-run: ppl-phase-report")
+            lines.append("    3. If Phase 1 still fails → device may need updated exploit")
+            lines.append("    4. Otherwise: auto-ppl-breaker → set-all-ids-zero")
         }
         return .ok(lines.joined(separator: "\n"))
     }
@@ -620,10 +620,10 @@ OmegaCore.register("ppl-bypass-strategy-planner") { _, mgr in
             lines.append("    1. physmap P1 OK → run ppl-phase-report")
             lines.append("    2. Try: auto-ppl-breaker")
         } else {
-            lines.append("    1. sandbox-complete-escape")
-            lines.append("    2. amfi-disable-globally")
-            lines.append("    3. set-all-ids-zero")
-            lines.append("    4. cs-remove-all-restrictions")
+            lines.append("    1. Run: offsets → fixoffsets (resolve mac_proc_enforce offset)")
+            lines.append("    2. Re-run: ppl-phase-report")
+            lines.append("    3. If Phase 1 still fails → device may need updated exploit")
+            lines.append("    4. Otherwise: auto-ppl-breaker → set-all-ids-zero")
         }
         return .ok(lines.joined(separator: "\n"))
     }
