@@ -688,9 +688,10 @@ OmegaCore.register("kinfo") { _, mgr in
                 lines.append("   Run: offsets → fixoffsets → auto-ppl-breaker")
                 lines.append("   Or:  This iOS version may require updated offsets.")
             } else if !pmOK && !pplBypassed {
-                lines.append("❌ PPL bypass unavailable — physmap fingerprint failed.")
-                lines.append("   Phase 1 returned: pmap not found (pm_phase1_fingerprint = -2)")
-                lines.append("   This device/iOS combination may not support physmap bypass.")
+                lines.append("❌ PPL bypass prerequisites not met — Phase 1 failed.")
+                lines.append("   Phase 1 returned: -2 (precondition failed: mac_proc_enforce offset unknown)")
+                lines.append("   This is NOT 'impossible' — resolve offsets first, then retry.")
+                lines.append("   Run: offsets → fixoffsets → auto-ppl-breaker")
             } else if uid != 0 && !pplBypassed {
                 lines.append("⚠️  Unprivileged (uid=\(uid)). PPL active but bypass ready.")
                 lines.append("   Execute: auto-ppl-breaker")
