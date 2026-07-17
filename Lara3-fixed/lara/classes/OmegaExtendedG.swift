@@ -1081,3 +1081,54 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
     return lines.joined(separator: "\n")
 }
 
+
+private func _regHelpPPL() {
+    OmegaCore.register("help-ppl") { _, _ in
+        .ok("""
+help-ppl: PAC / KTRR / SMR / PPL Analysis (OmegaExtendedG)
+─────────────────────────────────────────────────────────────────────────
+  PAC — Pointer Authentication:
+    pac-reader <va>                 Decode PAC-signed kernel pointer
+    pac-signature-extractor <ptr>   Extract PAC tag from raw pointer
+    pac-key-scanner [start] [end]   Scan kernel for PAC-signed ptrs
+    pac-context-analyzer <ptr>      PACDA vs PACIA analysis
+    pac-entropy-checker <va> [n]    Measure PAC signature entropy
+    pac-algorithm-fingerprint       Identify PAC algorithm (QARMA)
+    pac-strength-analyzer           Overall PAC protection score
+    pac-coverage-mapper             PAC coverage of known structs
+    pac-weak-key-detector <va> [n] [t]  Check for duplicate tags
+    pac-null-pointer-checker <va>   Find null-PAC (PACIZA) ptrs
+    pac-bypass-validator            Confirm bypass correctness
+
+  KTRR — Kernel Text Region Read-only:
+    ktrr-region-mapper              All KTRR-protected regions + PTE
+    ktrr-boundary-finder            Exact KTRR start/end VA
+    ktrr-permission-checker <addr>  AP bits + protection for addr
+    ktrr-enforcement-detector       Is KTRR hardware-enforced?
+    ktrr-bypass-paths-finder        RW windows via physmap
+
+  SMR — Secure Memory Region:
+    smr-region-scanner              Scan allproc for SMR ptrs
+    smr-metadata-reader <ptr>       Decode SMR pointer + epoch
+    smr-protection-level-analyzer   Epoch size + rotation policy
+    smr-isolation-tester <ptr>      SMR boundary reachability
+
+  PPL — Page Protection Layer:
+    ppl-status                      Full PPL + privilege snapshot
+    ppl-phase-report                OmegaPhysmap P1/P2/P3 results
+    ppl-write-bypass <addr> <val>   physmap write attempt
+    ppl-signature-forge             EXTRACT PAC tag + build fake proc_ro (read-only)
+    ppl-protected-variable-read <a> Read + PPL zone check
+    ppl-bypass-strategy-planner     Auto-recommend bypass path
+    ppl-fuzzer <addr> [len]         Probe for writable windows
+    ppl-version-comparison          PPL history across iOS versions
+    auto-ppl-breaker                Run best bypass automatically
+    comprehensive-ppl-tester        Full 7-check test battery
+
+  PPL HUNTER — Multi-Vector Autonomous Scanner:
+    ppl-hunter                      Run all 6 hunters (Zone, Fork, PAC, PTE×3)
+                                    Reports exploitable targets + PTE layout
+─────────────────────────────────────────────────────────────────────────
+""")
+    }
+}
