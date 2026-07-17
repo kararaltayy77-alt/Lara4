@@ -574,15 +574,114 @@ LARA Shell — full command reference (iSH-level access)
     private static func registerKernel() {
         OmegaCore.register("kinfo") { _, mgr in
             guard mgr.dsready else { return .fail("kinfo: exploit not ready — run 'run' first") }
-            return .ok("""
-  kernel_base  : \(String(format: "0x%016llx", mgr.kernbase))
-  kernel_slide : \(String(format: "0x%016llx", mgr.kernslide))
-  our_proc     : \(String(format: "0x%016llx", ds_get_our_proc()))
-  our_task     : \(String(format: "0x%016llx", ds_get_our_task()))
-  vfs_ready    : \(mgr.vfsready)
-  sbx_ready    : \(mgr.sbxready)
-  rc_ready     : \(mgr.rcready)
-""")
+
+            var lines: [String] = []
+            lines.append("=== KERNEL STATE DIAGNOSTIC ===")
+            lines.append("")
+
+            // 1. KRW Subsystem
+            let krwReady = ds_is_ready()
+            let healthScore = ds_session_health_score()
+            let generation = ds_get_session_generation()
+            let socketBroken = ds_socket_broken()
+            let lastErrno = ds_get_last_errno()
+
+            let krwState: String
+            if !krwReady { krwState = "FAILED" }
+            else if socketBroken { krwState = "DEGRADED (socket broken)" }
+            else if healthScore >= 90 { krwState = "OPTIMAL" }
+            else if healthScore >= 70 { krwState = "FUNCTIONAL" }
+            else if healthScore >= 40 { krwState = "DEGRADED" }
+            else { krwState = "CRITICAL" }
+
+            lines.append(String(format: "[KRW]      State: %-30s  Health: %d%%  Gen: %llu  Errno: %d",
+                krwState, healthScore, generation, lastErrno))
+
+            // 2. Pointer Integrity
+            let kbase = ds_get_kernel_base()
+            let kslide = ds_get_kernel_slide()
+            let ourProc = ds_get_our_proc()
+            let ourTask = ds_get_our_task()
+            let rwPCB = ds_get_rw_socket_pcb()
+
+            let procState = (ourProc != 0 && (ourProc & 0xFFFF000000000000) != 0) ? "VALID" : "NULL/CORRUPT"
+            let taskState = (ourTask != 0 && (ourTask & 0xFFFF000000000000) != 0) ? "VALID" : "NULL/CORRUPT"
+            let kbaseState = (kbase != 0 && kbase & 0xFFF == 0) ? "VALID" : "INVALID"
+            let pcbState = rwPCB != 0 ? "VALID" : "NULL"
+
+            lines.append(String(format: "[PTR]      proc: %-20s  0x%012llx", procState, ourProc))
+            lines.append(String(format: "           task: %-20s  0x%012llx", taskState, ourTask))
+            lines.append(String(format: "           kbase: %-19s  0x%016llx", kbaseState, kbase))
+            lines.append(String(format: "           slide: %-19s  0x%016llx", kslide != 0 ? "VALID" : "ZERO", kslide))
+            lines.append(String(format: "           rwpcb: %-19s  0x%012llx", pcbState, rwPCB))
+
+            // 3. Privilege
+            let uid = getuid()
+            let gid = getgid()
+            let euid = geteuid()
+            let privState = uid == 0 ? "ROOT" : (euid == 0 ? "ELEVATED (euid=0)" : "UNPRIVILEGED")
+            lines.append(String(format: "[PRIV]     Level: %-20s  uid=%d  gid=%d  euid=%d", privState, uid, gid, euid))
+
+            // 4. Protections
+            let hasPAC = device_has_pac()
+            let pplBypassed = ppl_is_bypassed()
+            let pmOK = pm_fingerprint_ok()
+            let amfiEnforce = amfi_get_mac_proc_enforce()
+
+            var ktrrActive = false
+            let ktrrR = tp_ktrr_enforcement_detector(&ktrrActive)
+            let ktrrState = ktrrR.code == 0 ? (ktrrActive ? "ACTIVE" : "INACTIVE") : "UNKNOWN"
+
+            lines.append(String(format: "[PAC]      Status: %@", hasPAC ? "ARMED" : "ABSENT"))
+            lines.append(String(format: "[PPL]      Status: %@", pplBypassed ? "BYPASSED" : (pmOK ? "ENFORCED (physmap mapped)" : "ENFORCED")))
+            lines.append(String(format: "[KTRR]     Status: %@", ktrrState))
+            lines.append(String(format: "[AMFI]     Status: %@", amfiEnforce == 0 ? "DISABLED" : "ENFORCING"))
+
+            // 5. Backend
+            let backend = rwPCB != 0 ? "IOSurface-backed socket PCB (landa primitive)" : "UNKNOWN"
+            lines.append(String(format: "[BACKEND]  Type: %@", backend))
+
+            // 6. Offsets / Symbols
+            let offsetsOK = mgr.hasOffsets && verifykernoffsets()
+            let keyOff1 = off_proc_p_proc_ro
+            let keyOff2 = off_proc_ro_p_ucred
+            let keyOff3 = off_task_map
+            let symState = (keyOff1 != 0 && keyOff2 != 0 && keyOff3 != 0) ? "RESOLVED" : "PARTIAL"
+
+            lines.append(String(format: "[OFFSETS]  State: %-20s  Resolver: %@", offsetsOK ? "LOADED" : "MISSING", symState))
+            if symState == "PARTIAL" {
+                lines.append(String(format: "           proc_ro=%u  ucred=%u  task_map=%u", keyOff1, keyOff2, keyOff3))
+            }
+
+            // 7. Subsystems
+            lines.append(String(format: "[VFS]      State: %@", mgr.vfsready ? "MOUNTED" : "NOT MOUNTED"))
+            lines.append(String(format: "[SBX]      State: %@", mgr.sbxready ? "ESCAPED" : "CONFINED"))
+            lines.append(String(format: "[RC]       State: %@", mgr.rcready ? "ARMED" : "DISARMED"))
+            lines.append(String(format: "[KACCESS]  State: %@", mgr.kaccessready ? "READY" : (mgr.kaccesserror != nil ? "FAULT: \(mgr.kaccesserror!)" : "NOT READY")))
+
+            // 8. Actionable Summary
+            lines.append("")
+            lines.append("--- ASSESSMENT ---")
+            if !krwReady {
+                lines.append("ACTION:    KRW subsystem failed. Execute 'run' to re-exploit.")
+            } else if socketBroken {
+                lines.append("ACTION:    Socket state broken. Execute 'revive' before any kwrite operation.")
+            } else if healthScore < 40 {
+                lines.append("ACTION:    KRW critically degraded. Execute 'revive' or 'run' immediately.")
+            } else if !offsetsOK {
+                lines.append("ACTION:    Kernel offsets unresolved. Execute 'offsets' or 'fixoffsets'.")
+            } else if uid != 0 && !pplBypassed {
+                lines.append("ACTION:    Unprivileged. Execute 'auto-ppl-breaker' or 'set-all-ids-zero'.")
+            } else if uid == 0 && amfiEnforce != 0 {
+                lines.append("ACTION:    Root acquired but AMFI enforcing. Execute 'amfi-disable-globally'.")
+            } else if uid == 0 {
+                lines.append("STATUS:    Fully privileged. AMFI disabled. Ready for code-sign bypass operations.")
+            } else {
+                lines.append("STATUS:    Partial state. Review individual subsystem states above.")
+            }
+            lines.append("=== END DIAGNOSTIC ===")
+
+            return .ok(lines.joined(separator: "\n"))
         }
 
         OmegaCore.register("kread") { arg, mgr in
