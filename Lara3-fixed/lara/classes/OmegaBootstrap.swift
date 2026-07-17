@@ -67,6 +67,26 @@ func csops(_ pid: pid_t, _ ops: UInt32, _ useraddr: UnsafeMutableRawPointer, _ u
 
 // MARK: - OmegaBootstrap
 
+// MARK: - Forward declarations for privilege escalation (amfi/ppl)
+// These C functions are linked at build-time from external objects.
+@_silgen_name("ppl_bypass_ucred_direct")
+func ppl_bypass_ucred_direct(_ proc: UInt64) -> Int32
+
+@_silgen_name("amfi_disable_mac_proc_enforce")
+func amfi_disable_mac_proc_enforce() -> Bool
+
+@_silgen_name("amfi_patch_proc_csflags")
+func amfi_patch_proc_csflags(_ pid: Int32) -> Bool
+
+@_silgen_name("amfi_is_root")
+func amfi_is_root() -> Bool
+
+@_silgen_name("amfi_elevate_to_root")
+func amfi_elevate_to_root() -> Int32
+
+@_silgen_name("ppl_bypass")
+func ppl_bypass() -> Int32
+
 final class OmegaBootstrap {
 
     private static var started = false
@@ -571,16 +591,8 @@ LARA Shell — full command reference (iSH-level access)
 
     // MARK: - Kernel R/W
 
-    private static     // MARK: - Tool result helper
-    private func _toolMsg(_ result: tool_result_t) -> String {
-        withUnsafePointer(to: result.msg) {
-            $0.withMemoryRebound(to: CChar.self, capacity: 512) {
-                String(cString: $0)
-            }
-        }
-    }
+private static func registerKernel() {
 
-func registerKernel() {
         // MARK: - Privilege Escalation Commands
 
         OmegaCore.register("set-all-ids-zero") { _, mgr in
@@ -635,7 +647,6 @@ func registerKernel() {
                 return .fail(String(format: "ppl-bypass: failed (code=%d) — physmap may be unavailable", result))
             }
         }
-
 OmegaCore.register("kinfo") { _, mgr in
             guard mgr.dsready else { return .fail("kinfo: exploit not ready — run 'run' first") }
 
@@ -706,11 +717,11 @@ OmegaCore.register("kinfo") { _, mgr in
                 lines.append("Run: offsets")
             } else if amfiEnforce == 0xFFFFFFFF {
                 lines.append("Try: set-all-ids-zero (direct ucred patch)")
-                lines.append("Or:  ppl-bypass (full privilege escalation)")
+            lines.append("Or:  ppl-bypass (full privilege escalation)")
             } else if !pmOK && !pplBypassed {
                 lines.append("Run: ppl-bypass")
             } else if uid != 0 && !pplBypassed {
-                lines.append("Run: set-all-ids-zero or ppl-bypass")
+                lines.append("Run: ppl-bypass")
             } else if uid == 0 && amfiEnforce != 0 {
                 lines.append("Run: amfi-disable-globally")
             } else if uid == 0 {
