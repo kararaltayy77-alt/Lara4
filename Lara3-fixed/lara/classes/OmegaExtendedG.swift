@@ -221,8 +221,8 @@ private func _regKTRR() {
             let name = withUnsafeBytes(of: reg.region_name) {
                 String(cString: $0.baseAddress!.assumingMemoryBound(to: CChar.self))
             }
-            lines.append(String(format: "  %-15s 0x%016llx  0x%016llx   %@     %@     %@",
-                name, reg.region_start, reg.region_end,
+            lines.append(String(format: "  %-15@ 0x%016llx  0x%016llx   %@     %@     %@",
+                name as NSString, reg.region_start, reg.region_end,
                 reg.is_ktrr ? "yes" : "no",
                 reg.is_ppl_zone ? "yes" : "no",
                 reg.is_executable ? "yes" : "no"
