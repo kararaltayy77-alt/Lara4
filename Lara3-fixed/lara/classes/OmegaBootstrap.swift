@@ -626,7 +626,7 @@ OmegaCore.register("kinfo") { _, mgr in
             lines.append(String(format: "[PRIV]     Level: %-20s  uid=%d  gid=%d  euid=%d", privState, uid, gid, euid))
 
             // 4. Protections
-            let hasPAC = device_has_pac()
+            let hasPAC = true  // A12+ always armed
             let pplBypassed = ppl_is_bypassed()
             let pmOK = pm_fingerprint_ok()
             let amfiEnforce = amfi_get_mac_proc_enforce()
