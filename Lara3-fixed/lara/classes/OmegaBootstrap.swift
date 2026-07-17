@@ -571,7 +571,71 @@ LARA Shell — full command reference (iSH-level access)
 
     // MARK: - Kernel R/W
 
-    private static func registerKernel() {
+    private static     // MARK: - Tool result helper
+    private func _toolMsg(_ result: tool_result_t) -> String {
+        withUnsafePointer(to: result.msg) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 512) {
+                String(cString: $0)
+            }
+        }
+    }
+
+func registerKernel() {
+        // MARK: - Privilege Escalation Commands
+
+        OmegaCore.register("set-all-ids-zero") { _, mgr in
+            guard mgr.dsready else { return .fail("set-all-ids-zero: exploit not ready — run 'run' first") }
+            let ourProc = ds_get_our_proc()
+            guard ourProc != 0 else { return .fail("set-all-ids-zero: our_proc = 0") }
+            let result = ppl_bypass_ucred_direct(ourProc)
+            if result == 0 {
+                return .ok(String(format: "set-all-ids-zero: ucred patched — uid=%d ✔️", getuid()))
+            } else {
+                return .fail(String(format: "set-all-ids-zero: failed (code=%d) — PPL may block ucred write", result))
+            }
+        }
+
+        OmegaCore.register("amfi-disable-globally") { _, mgr in
+            guard mgr.dsready else { return .fail("amfi-disable-globally: exploit not ready — run 'run' first") }
+            if amfi_disable_mac_proc_enforce() {
+                return .ok("amfi-disable-globally: mac_proc_enforce disabled ✔️")
+            } else {
+                return .fail("amfi-disable-globally: failed — offset may be unknown (0xFFFFFFFF)")
+            }
+        }
+
+        OmegaCore.register("cs-remove-all-restrictions") { _, mgr in
+            guard mgr.dsready else { return .fail("cs-remove-all-restrictions: exploit not ready — run 'run' first") }
+            if amfi_patch_proc_csflags(getpid()) {
+                return .ok("cs-remove-all-restrictions: CS_VALID | CS_PLATFORM_BINARY | CS_DEBUGGED set ✔️")
+            } else {
+                return .fail("cs-remove-all-restrictions: failed — amfi offset may be unknown")
+            }
+        }
+
+        OmegaCore.register("root") { _, mgr in
+            guard mgr.dsready else { return .fail("root: exploit not ready — run 'run' first") }
+            if amfi_is_root() {
+                return .ok("root: already root (uid=0) ✔️")
+            }
+            let result = amfi_elevate_to_root()
+            if result == 0 {
+                return .ok(String(format: "root: elevation successful — uid=%d ✔️", getuid()))
+            } else {
+                return .fail(String(format: "root: elevation failed (code=%d) — try: set-all-ids-zero", result))
+            }
+        }
+
+        OmegaCore.register("ppl-bypass") { _, mgr in
+            guard mgr.dsready else { return .fail("ppl-bypass: exploit not ready — run 'run' first") }
+            let result = ppl_bypass()
+            if result == 0 {
+                return .ok(String(format: "ppl-bypass: privilege escalation achieved — uid=%d ✔️", getuid()))
+            } else {
+                return .fail(String(format: "ppl-bypass: failed (code=%d) — physmap may be unavailable", result))
+            }
+        }
+
 OmegaCore.register("kinfo") { _, mgr in
             guard mgr.dsready else { return .fail("kinfo: exploit not ready — run 'run' first") }
 
@@ -637,21 +701,22 @@ OmegaCore.register("kinfo") { _, mgr in
             lines.append("")
             lines.append("--- STATUS ---")
             if !krwReady {
-                lines.append("Run 'run'")
+                lines.append("Run: run")
             } else if !offsetsOK {
-                lines.append("Run 'offsets'")
+                lines.append("Run: offsets")
             } else if amfiEnforce == 0xFFFFFFFF {
-                lines.append("Run 'offsets' → 'fixoffsets'")
+                lines.append("Try: set-all-ids-zero (direct ucred patch)")
+                lines.append("Or:  ppl-bypass (full privilege escalation)")
             } else if !pmOK && !pplBypassed {
-                lines.append("Run 'auto-ppl-breaker'")
+                lines.append("Run: ppl-bypass")
             } else if uid != 0 && !pplBypassed {
-                lines.append("Run 'auto-ppl-breaker'")
+                lines.append("Run: set-all-ids-zero or ppl-bypass")
             } else if uid == 0 && amfiEnforce != 0 {
-                lines.append("Run 'amfi-disable-globally'")
+                lines.append("Run: amfi-disable-globally")
             } else if uid == 0 {
-                lines.append("Ready ✔️")
+                lines.append("Run: cs-remove-all-restrictions")
             } else {
-                lines.append("Check above")
+                lines.append("Ready ✔️")
             }
 
             return .ok(lines.joined(separator: "\n"))
