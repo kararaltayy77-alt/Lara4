@@ -572,30 +572,33 @@ LARA Shell — full command reference (iSH-level access)
     // MARK: - Kernel R/W
 
     private static func registerKernel() {
-        OmegaCore.register("kinfo") { _, mgr in
+OmegaCore.register("kinfo") { _, mgr in
             guard mgr.dsready else { return .fail("kinfo: exploit not ready — run 'run' first") }
 
             var lines: [String] = []
+
+            // Device & Process Info (runtime — real device data)
+            var sysInfo = utsname()
+            uname(&sysInfo)
+            let machine = withUnsafePointer(to: &sysInfo.machine) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                    String(cString: $0)
+                }
+            }
+            let deviceName = UIDevice.current.name
+            let iosVersion = UIDevice.current.systemVersion
+            let pid = getpid()
+            lines.append(String(format: "[DEVICE]   %@ | iOS %@ | %@ | PID=%d",
+                deviceName, iosVersion, machine, pid))
+            lines.append("")
+
             lines.append("=== KERNEL STATE DIAGNOSTIC ===")
             lines.append("")
 
             // 1. KRW Subsystem
             let krwReady = ds_is_ready()
-            let healthScore = ds_session_health_score()
-            let generation = ds_get_session_generation()
-            let socketBroken = ds_socket_broken()
-            let lastErrno = ds_get_last_errno()
-
-            let krwState: String
-            if !krwReady { krwState = "FAILED" }
-            else if socketBroken { krwState = "DEGRADED (socket broken)" }
-            else if healthScore >= 90 { krwState = "OPTIMAL" }
-            else if healthScore >= 70 { krwState = "FUNCTIONAL" }
-            else if healthScore >= 40 { krwState = "DEGRADED" }
-            else { krwState = "CRITICAL" }
-
-            lines.append(String(format: "[KRW]      State: %-30s  Health: %d%%  Gen: %llu  Errno: %d",
-                krwState, healthScore, generation, lastErrno))
+            let krwState = krwReady ? "OPERATIONAL" : "FAILED"
+            lines.append(String(format: "[KRW]      State: %-20s  Backend: kernel r/w via exploit primitive", krwState))
 
             // 2. Pointer Integrity
             let kbase = ds_get_kernel_base()
@@ -642,7 +645,7 @@ LARA Shell — full command reference (iSH-level access)
             lines.append(String(format: "[BACKEND]  Type: %@", backend))
 
             // 6. Offsets / Symbols
-            let offsetsOK = mgr.hasOffsets && verifykernoffsets()
+            let offsetsOK = mgr.hasOffsets
             let keyOff1 = off_proc_p_proc_ro
             let keyOff2 = off_proc_ro_p_ucred
             let keyOff3 = off_task_map
@@ -664,10 +667,6 @@ LARA Shell — full command reference (iSH-level access)
             lines.append("--- ASSESSMENT ---")
             if !krwReady {
                 lines.append("ACTION:    KRW subsystem failed. Execute 'run' to re-exploit.")
-            } else if socketBroken {
-                lines.append("ACTION:    Socket state broken. Execute 'revive' before any kwrite operation.")
-            } else if healthScore < 40 {
-                lines.append("ACTION:    KRW critically degraded. Execute 'revive' or 'run' immediately.")
             } else if !offsetsOK {
                 lines.append("ACTION:    Kernel offsets unresolved. Execute 'offsets' or 'fixoffsets'.")
             } else if uid != 0 && !pplBypassed {
@@ -683,6 +682,7 @@ LARA Shell — full command reference (iSH-level access)
 
             return .ok(lines.joined(separator: "\n"))
         }
+
 
         OmegaCore.register("kread") { arg, mgr in
             guard mgr.dsready else { return .fail("kread: exploit not ready") }
