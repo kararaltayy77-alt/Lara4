@@ -353,42 +353,26 @@ private func _regSMR() {
 
 private func _regPPL() {
     OmegaCore.register("ppl-status") { _, mgr in
-        guard mgr.dsready else { return .fail("ppl-status: exploit not ready") }
-        let uid    = getuid()
-        let pplBp  = ppl_is_bypassed()
-        let pmOk   = pm_fingerprint_ok()
+        guard mgr.dsready else { return .fail("ppl-status: not ready") }
+        let uid = getuid()
+        let pplBp = ppl_is_bypassed()
+        let pmOk = pm_fingerprint_ok()
         let pmBase = pm_get_physmap_base()
         let ucredV = pm_get_ucred_va()
         let enforce = amfi_get_mac_proc_enforce()
-
-        // FIX: Handle 0xFFFFFFFF as UNKNOWN
-        let amfiStatus: String
-        if enforce == 0xFFFFFFFF {
-            amfiStatus = "UNKNOWN ❌ (read failed — offset missing)"
-        } else if enforce == 0 {
-            amfiStatus = "disabled ✅"
-        } else {
-            amfiStatus = "enforcing ⚠️"
-        }
-
+        let amfiStr = enforce == 0xFFFFFFFF ? "0xFFFFFFFF" : String(enforce)
         return .ok(String(format:
-            "──────── ppl-status ────────\n" +
-            "  uid              : %d  %@\n" +
-            "  ppl_is_bypassed  : %@\n" +
-            "  physmap_ok       : %@\n" +
-            "  physmap_base     : 0x%016llx\n" +
-            "  ucred_va         : 0x%016llx\n" +
-            "  mac_proc_enforce : %u  %@\n" +
-            "  vfs_ready        : %@\n" +
-            "  sbx_ready        : %@\n" +
-            "────────────────────────────",
-            uid, uid == 0 ? "ROOT ✅" : "user ❌",
-            pplBp ? "YES ✅" : "NO ❌",
-            pmOk  ? "YES ✅" : "NO ❌",
-            pmBase, ucredV,
-            enforce, amfiStatus,
-            mgr.vfsready ? "YES ✅" : "NO ❌",
-            mgr.sbxready ? "YES ✅" : "NO ❌"
+            "uid:      %d\n" +
+            "ppl:      %@\n" +
+            "physmap:  %@\n" +
+            "physmap_base: 0x%016llx\n" +
+            "ucred_va:     0x%016llx\n" +
+            "amfi:     %@\n" +
+            "vfs:      %@\n" +
+            "sbx:      %@",
+            uid, pplBp ? "yes" : "no", pmOk ? "yes" : "no",
+            pmBase, ucredV, amfiStr,
+            mgr.vfsready ? "yes" : "no", mgr.sbxready ? "yes" : "no"
         ))
     }
 OmegaCore.register("ppl-phase-report") { _, mgr in
@@ -450,6 +434,25 @@ OmegaCore.register("ppl-phase-report") { _, mgr in
             p2, p2Status,
             p3, p3Status,
             uid, uid == 0 ? "ROOT ✅" : "NOT ROOT ❌ (uid=\(uid))"
+        ))
+    }
+OmegaCore.register("ppl-phase-report") { _, mgr in
+        guard mgr.dsready else { return .fail("ppl-phase-report: not ready") }
+        let p1 = pm_phase1_fingerprint()
+        let p2 = pm_phase2_resolve_ucred()
+        let p3 = pm_phase3_write_root()
+        let uid = getuid()
+        let p1s = p1 == 0 ? "PASS" : "FAIL (\(p1))"
+        let p2s = p2 == 0 ? "PASS" : "FAIL (\(p2))"
+        let p3s = p3 == 0 ? "PASS" : "FAIL (\(p3))"
+        return .ok(String(format:
+            "Phase 1: %@\n" +
+            "Phase 2: %@\n" +
+            "Phase 3: %@\n" +
+            "uid:     %d\n" +
+            "---\n" +
+            "Fix:     offsets → fixoffsets → auto-ppl-breaker",
+            p1s, p2s, p3s, uid
         ))
     }
 OmegaCore.register("ppl-write-bypass") { rawArg, mgr in
@@ -558,6 +561,29 @@ OmegaCore.register("ppl-write-bypass") { rawArg, mgr in
     }
 
     OmegaCore.register("ppl-bypass-strategy-planner") { _, mgr in
+        guard mgr.dsready else { return .fail("ppl-bypass-strategy-planner: not ready") }
+        let uid = getuid()
+        let pplBp = ppl_is_bypassed()
+        let p1 = pm_fingerprint_ok()
+        let enforce = amfi_get_mac_proc_enforce()
+        let next: String
+        if uid == 0 {
+            next = "cs-remove-all-restrictions"
+        } else if pplBp {
+            next = "set-all-ids-zero"
+        } else if enforce == 0xFFFFFFFF {
+            next = "offsets → fixoffsets"
+        } else if p1 {
+            next = "auto-ppl-breaker"
+        } else {
+            next = "offsets → fixoffsets → auto-ppl-breaker"
+        }
+        return .ok(String(format:
+            "uid: %d | ppl: %@ | physmap: %@\nNext: %@",
+            uid, pplBp ? "yes" : "no", p1 ? "yes" : "no", next
+        ))
+    }
+OmegaCore.register("ppl-bypass-strategy-planner") { _, mgr in
         guard mgr.dsready else { return .fail("ppl-bypass-strategy-planner: exploit not ready") }
         let uid   = getuid()
         let pplBp = ppl_is_bypassed()
@@ -653,29 +679,15 @@ OmegaCore.register("ppl-bypass-strategy-planner") { _, mgr in
     }
 
     OmegaCore.register("auto-ppl-breaker") { _, mgr in
-        guard mgr.dsready else { return .fail("auto-ppl-breaker: exploit not ready") }
-
-        // FIX: Pre-check before calling external library
+        guard mgr.dsready else { return .fail("auto-ppl-breaker: not ready") }
         let pmOk = pm_fingerprint_ok()
         let enforce = amfi_get_mac_proc_enforce()
-        let enforceUnknown = (enforce == 0xFFFFFFFF)
-
         if !pmOk {
-            return .fail("""
-                ❌ auto-ppl-breaker: physmap not ready (pm_fingerprint_ok = false)
-                Phase 1 fingerprint failed. Cannot proceed with PPL bypass.
-                Run: ppl-phase-report to diagnose.
-                """)
+            return .fail("Pre-check: physmap=no\nFix: offsets → fixoffsets")
         }
-
-        if enforceUnknown {
-            return .fail("""
-                ❌ auto-ppl-breaker: mac_proc_enforce offset unknown (0xFFFFFFFF)
-                AMFI status unreadable. PPL bypass requires valid AMFI offset.
-                Run: offsets → fixoffsets first.
-                """)
+        if enforce == 0xFFFFFFFF {
+            return .fail("Pre-check: amfi=0xFFFFFFFF\nFix: offsets → fixoffsets")
         }
-
         return _gresult(tp_auto_ppl_breaker())
     }
 OmegaCore.register("comprehensive-ppl-tester") { _, mgr in
