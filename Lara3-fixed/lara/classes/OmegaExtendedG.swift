@@ -730,7 +730,7 @@ private func _hunterForkProbe() -> String {
     }
 
     return lines.joined(separator: "\n")
-
+}
 
 private func _hunterPACCollision() -> String {
     var lines: [String] = []
