@@ -9,6 +9,7 @@
   #import "darksword.h"
 #import "OmegaCrashBarrier.h"
   #import "offsets.h"
+#import "pac_utils.h"
   #import "utils.h"
   #import "vnode.h"
   #import "apfs.h"
