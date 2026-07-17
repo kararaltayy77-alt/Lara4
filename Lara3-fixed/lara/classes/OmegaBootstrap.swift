@@ -595,25 +595,10 @@ OmegaCore.register("kinfo") { _, mgr in
             let amfiEnforce = amfi_get_mac_proc_enforce()
             let offsetsOK = mgr.hasOffsets
             let health = ds_session_health_score()
-            let generation = ds_get_session_generation()
-            let lastErrno = ds_get_last_errno()
 
             var ktrrActive = false
             let ktrrR = tp_ktrr_enforcement_detector(&ktrrActive)
             let ktrrState = ktrrR.code == 0 ? (ktrrActive ? "ACTIVE" : "INACTIVE") : "UNKNOWN"
-
-            // KRW smoke test
-            var krwReadOK = false
-            var krwWriteOK = false
-            if krwReady && kbase != 0 {
-                let testVal = ds_kread64(kbase)
-                krwReadOK = (testVal != 0 || testVal == 0) // read succeeded if no crash
-                if rwPCB != 0 {
-                    let scratchVal = ds_kread64(rwPCB)
-                    ds_kwrite64(rwPCB, scratchVal)
-                    krwWriteOK = (ds_kread64(rwPCB) == scratchVal)
-                }
-            }
 
             let healthStr = health >= 80 ? "STABLE" : (health >= 50 ? "DEGRADED" : "BROKEN")
             let healthIcon = health >= 80 ? "✔️" : (health >= 50 ? "⚠️" : "✖️")
@@ -624,7 +609,6 @@ OmegaCore.register("kinfo") { _, mgr in
             let backendStr = rwPCB != 0 ? "IOSurface PCB" : "UNKNOWN"
 
             var lines: [String] = []
-            // One-line summary
             lines.append(String(format: "SESSION: %@ (%d%%) | KRW %@ | SBX %@ | PPL %@ | ROOT %@",
                 healthStr, health, krwStr, sbxStr, pplStr, rootStr))
             lines.append("")
@@ -634,9 +618,6 @@ OmegaCore.register("kinfo") { _, mgr in
                 UIDevice.current.name, UIDevice.current.systemVersion, machine, getpid()))
             lines.append(String(format: "[HEALTH]   %@ %d%% (%@)", healthIcon, health, healthStr))
             lines.append(String(format: "[KRW]      %@ | backend=%@", krwStr, backendStr))
-            lines.append(String(format: "           read=%@ write=%@",
-                krwReadOK ? "PASS ✔️" : "FAIL ✖️",
-                krwWriteOK ? "PASS ✔️" : "FAIL ✖️"))
             lines.append(String(format: "[KERNEL]   proc=0x%016llx", ourProc))
             lines.append(String(format: "           task=0x%016llx", ourTask))
             lines.append(String(format: "           kbase=0x%016llx", kbase))
@@ -653,7 +634,6 @@ OmegaCore.register("kinfo") { _, mgr in
             lines.append(String(format: "[RC]       %@", mgr.rcready ? "ARMED ✔️" : "DISARMED ✖️"))
             lines.append(String(format: "[KERNEL RW] %@", mgr.kaccessready ? "READY ✔️" : "OFF ✖️"))
             lines.append(String(format: "[OFFSETS]  %@", offsetsOK ? "LOADED ✔️" : "MISSING ✖️"))
-            lines.append(String(format: "[SESSION]  gen=%llu errno=%d", generation, lastErrno))
             lines.append("")
             lines.append("--- STATUS ---")
             if !krwReady {
