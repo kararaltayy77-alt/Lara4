@@ -404,7 +404,7 @@ OmegaCore.register("ppl-phase-report") { _, mgr in
         // FIX: Detailed interpretation of return codes
         let p1Status: String
         switch p1 {
-        case 0:  p1Status = "✅ pmap located"
+        case 0:  p1Status = "✔️ pmap located"
         case -2: p1Status = "❌ precondition failed: mac_proc_enforce offset unknown or pmap not mapped (run 'offsets' first)"
         case -1: p1Status = "❌ generic failure"
         default: p1Status = "❌ error code \(p1)"
@@ -412,14 +412,14 @@ OmegaCore.register("ppl-phase-report") { _, mgr in
 
         let p2Status: String
         switch p2 {
-        case 0:  p2Status = "✅ ucred resolved"
+        case 0:  p2Status = "✔️ ucred resolved"
         case -1: p2Status = "❌ failed (physmap not ready or ucred offset unknown)"
         default: p2Status = "❌ error code \(p2)"
         }
 
         let p3Status: String
         switch p3 {
-        case 0:  p3Status = "✅ uid=0 written"
+        case 0:  p3Status = "✔️ uid=0 written"
         case -1: p3Status = "❌ failed (PPL write blocked or previous phase failed)"
         default: p3Status = "❌ error code \(p3)"
         }
@@ -433,7 +433,7 @@ OmegaCore.register("ppl-phase-report") { _, mgr in
             p1, p1Status,
             p2, p2Status,
             p3, p3Status,
-            uid, uid == 0 ? "ROOT ✅" : "NOT ROOT ❌ (uid=\(uid))"
+            uid, uid == 0 ? "ROOT ✔️" : "NOT ROOT ❌ (uid=\(uid))"
         ))
     }
 OmegaCore.register("ppl-phase-report") { _, mgr in
@@ -593,16 +593,16 @@ OmegaCore.register("ppl-bypass-strategy-planner") { _, mgr in
 
         var lines = [
             "ppl-bypass-strategy-planner:",
-            String(format: "  uid           : %d  %@", uid, uid == 0 ? "ROOT ✅" : "user ❌"),
-            "  ppl_bypassed  : \(pplBp ? "YES ✅" : "NO ❌")",
-            "  physmap_ok    : \(p1 ? "YES ✅" : "NO ❌")",
-            "  amfi_enforce  : \(enforceUnknown ? "UNKNOWN ❌ (0xFFFFFFFF)" : (enforce == 0 ? "disabled ✅" : "enforcing ⚠️"))",
+            String(format: "  uid           : %d  %@", uid, uid == 0 ? "ROOT ✔️" : "user ❌"),
+            "  ppl_bypassed  : \(pplBp ? "YES ✔️" : "NO ❌")",
+            "  physmap_ok    : \(p1 ? "YES ✔️" : "NO ❌")",
+            "  amfi_enforce  : \(enforceUnknown ? "UNKNOWN ❌ (0xFFFFFFFF)" : (enforce == 0 ? "disabled ✔️" : "enforcing ⚠️"))",
             "",
             "  Recommended strategy:",
         ]
 
         if uid == 0 {
-            lines.append("    ✅ Already root — run cs-remove-all-restrictions to solidify")
+            lines.append("    ✔️ Already root — run cs-remove-all-restrictions to solidify")
         } else if pplBp {
             lines.append("    1. ppl already bypassed → set-all-ids-zero")
             lines.append("    2. amfi-disable-globally")
