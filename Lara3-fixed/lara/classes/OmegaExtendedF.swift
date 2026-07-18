@@ -94,11 +94,7 @@ private func _regCredentials() {
     OmegaCore.register("set-all-ids-zero") { _, mgr in
         guard mgr.dsready else { return .fail("set-all-ids-zero: exploit not ready") }
         let r = tc_set_all_ids_zero()
-        if r.code == 0 {
-            return .ok(r.msg)
-        } else {
-            return .fail("set-all-ids-zero: " + String(cString: withUnsafePointer(to: &r.msg) { $0 }))
-        }
+        return r.code == 0 ? .ok(_tr(r)) : .fail("set-all-ids-zero: " + _tr(r))
     }
 
     OmegaCore.register("ucred-reader") { rawArg, mgr in
