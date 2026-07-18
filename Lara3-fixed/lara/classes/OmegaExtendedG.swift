@@ -996,7 +996,8 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
     private func _regKernelObj() {
         // MARK: - Kernel Object Explorer (real commands, verified offsets)
 
-        OmegaCore.register("kstruct") { args, _ in
+        OmegaCore.register("kstruct") { arg, _ in
+            let args = arg.split(separator: " ").map { String($0) }
             guard args.count >= 2 else {
                 return .fail("usage: kstruct <type> <addr>  (types: socket, proc, task, ucred, vnode, ipc_port)")
             }
@@ -1053,7 +1054,8 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
             return .ok(lines.joined(separator: "\n"))
         }
 
-        OmegaCore.register("ksearch") { args, _ in
+        OmegaCore.register("ksearch") { arg, _ in
+            let args = arg.split(separator: " ").map { String($0) }
             guard args.count >= 1 else {
                 return .fail("usage: ksearch <pattern_hex> [start_hex] [end_hex]")
             }
@@ -1085,7 +1087,8 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
             return .ok(lines.joined(separator: "\n"))
         }
 
-        OmegaCore.register("xref") { args, _ in
+        OmegaCore.register("xref") { arg, _ in
+            let args = arg.split(separator: " ").map { String($0) }
             guard args.count >= 1 else {
                 return .fail("usage: xref <target_hex> [start_hex] [end_hex]")
             }
