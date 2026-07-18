@@ -97,7 +97,7 @@ private func _regCredentials() {
         if r.code == 0 {
             return .ok(r.msg)
         } else {
-            return .fail("set-all-ids-zero: " + String(cString: r.msg))
+            return .fail("set-all-ids-zero: " + String(cString: withUnsafePointer(to: &r.msg) { $0 }))
         }
     }
 
