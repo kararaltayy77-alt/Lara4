@@ -740,8 +740,11 @@ OmegaCore.register("kread") { arg, mgr in
                                     radix: parts[1].hasPrefix("0x") ? 16 : 10) else {
                 return .fail("kwrite32: usage: kwrite32 <addr> <value>")
             }
-            mgr.kwrite32(address: addr, value: val)
-            return .ok(String(format: "wrote 0x%08x → [0x%016llx]", val, addr))
+            let success = mgr.kwrite32(address: addr, value: val)
+            if !success {
+                return .fail(String(format: "kwrite32: WRITE FAILED at 0x%016llx — setsockopt/revive exhausted", addr))
+            }
+            return .ok(String(format: "kwrite32: 0x%08x → [0x%016llx] (verified)", val, addr))
         }
 
         OmegaCore.register("kcstr") { arg, mgr in
