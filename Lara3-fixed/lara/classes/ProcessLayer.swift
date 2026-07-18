@@ -380,12 +380,11 @@ final class ProcessLayer {
         while proc_ptr != 0 && !seen.contains(proc_ptr) && walked < 2048 {
             // SURGICAL FIX: proc_ptr from p_list.le_next is an SMR pointer.
             // Low 4 bits hold epoch tag. Must strip BEFORE reading any field.
-            let cleanPtr = proc_ptr & ~0xF
-            seen.insert(cleanPtr)
+            seen.insert(proc_ptr)
             walked += 1
 
             // ── READER: collect raw bytes — no interpretation here ─────────
-            let kpid = Int32(bitPattern: mgr.kread32(address: cleanPtr + pidOff))
+            let kpid = Int32(bitPattern: mgr.kread32(address: proc_ptr + pidOff))
             guard kpid > 0 else {
                 skipped += 1
                 proc_ptr = mgr.kread64(address: cleanPtr + nextOff) & ~0xF  // strip SMR epoch tag
@@ -393,11 +392,11 @@ final class ProcessLayer {
             }
 
             var nameBuf = [UInt8](repeating: 0, count: 64)
-            if nameOff != 0 { ds_kreadbuf(cleanPtr + nameOff, &nameBuf, 64) }
+            if nameOff != 0 { ds_kreadbuf(proc_ptr + nameOff, &nameBuf, 64) }
             let rawKernel = RawProcKernelData(
                 pid: kpid,
                 kernelNameBuf: nameBuf,
-                nextPtr: mgr.kread64(address: cleanPtr + nextOff)  // cleanPtr already stripped
+                nextPtr: mgr.kread64(address: proc_ptr + nextOff)
             )
 
             var bsd       = proc_bsdinfo()
