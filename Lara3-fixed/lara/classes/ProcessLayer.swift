@@ -378,23 +378,26 @@ final class ProcessLayer {
         entries.reserveCapacity(512)
 
         while proc_ptr != 0 && !seen.contains(proc_ptr) && walked < 2048 {
-            seen.insert(proc_ptr)
+            // SURGICAL FIX: proc_ptr from p_list.le_next is an SMR pointer.
+            // Low 4 bits hold epoch tag. Must strip BEFORE reading any field.
+            let cleanPtr = proc_ptr & ~0xF
+            seen.insert(cleanPtr)
             walked += 1
 
             // ── READER: collect raw bytes — no interpretation here ─────────
-            let kpid = Int32(bitPattern: mgr.kread32(address: proc_ptr + pidOff))
+            let kpid = Int32(bitPattern: mgr.kread32(address: cleanPtr + pidOff))
             guard kpid > 0 else {
                 skipped += 1
-                proc_ptr = mgr.kread64(address: proc_ptr + nextOff) & ~0xF  // strip SMR epoch tag
+                proc_ptr = mgr.kread64(address: cleanPtr + nextOff) & ~0xF  // strip SMR epoch tag
                 continue
             }
 
             var nameBuf = [UInt8](repeating: 0, count: 64)
-            if nameOff != 0 { ds_kreadbuf(proc_ptr + nameOff, &nameBuf, 64) }
+            if nameOff != 0 { ds_kreadbuf(cleanPtr + nameOff, &nameBuf, 64) }
             let rawKernel = RawProcKernelData(
                 pid: kpid,
                 kernelNameBuf: nameBuf,
-                nextPtr: mgr.kread64(address: proc_ptr + nextOff) & ~0xF  // strip SMR epoch tag
+                nextPtr: mgr.kread64(address: cleanPtr + nextOff)  // cleanPtr already stripped
             )
 
             var bsd       = proc_bsdinfo()
@@ -449,7 +452,7 @@ final class ProcessLayer {
                 source: .kernelAllproc, blockedReason: rsn
             ))
 
-            proc_ptr = rawKernel.nextPtr & ~0xF  // strip SMR epoch tag
+            proc_ptr = rawKernel.nextPtr  // SMR tag stripped in nextPtr read
         }
 
         if walked >= 2048 { globallogger.log("(proc) walk: WARN hit limit=2048") }
