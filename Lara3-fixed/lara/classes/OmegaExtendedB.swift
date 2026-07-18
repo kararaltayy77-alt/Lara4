@@ -77,7 +77,7 @@ func _registerMemory() {
               let val  = _parseAddrE(parts[1]) else {
             return .fail("memwrite: usage: memwrite <addr_hex> <value_hex>")
         }
-        mgr.kwrite64(address: addr, value: val)
+        let _ = mgr.kwrite64(address: addr, value: val)
         let verify = mgr.kread64(address: addr)
         return verify == val
             ? .ok(String(format: "memwrite: 0x%016llX <- 0x%016llX  OK", addr, val))
