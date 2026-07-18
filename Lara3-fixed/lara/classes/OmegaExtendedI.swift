@@ -180,117 +180,57 @@
   //           For system procs (BSD blocked), use sanity checks (NGROUPS_MAX≤16).
 
   private func _ucredInfo(pid: Int32, mgr: laramgr) -> String? {
-      guard let procPtr = _findProcI(pid: pid, mgr: mgr) else { return nil }
+      guard mgr.dsready else { return nil }
 
-      // ── BSD API ground truth (works for user processes; blocked for system procs)
-      var bsdInfo = proc_bsdinfo()
-      var bsdUID: UInt32 = 0xFFFF_FFFF
-      var bsdGID: UInt32 = 0xFFFF_FFFF
-      var bsdRUID: UInt32 = 0xFFFF_FFFF
-      var bsdRGID: UInt32 = 0xFFFF_FFFF
-      let bsdOk = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsdInfo,
-                               Int32(MemoryLayout<proc_bsdinfo>.size)) > 0
-      if bsdOk {
-          bsdUID  = bsdInfo.pbi_uid
-          bsdGID  = bsdInfo.pbi_gid
-          bsdRUID = bsdInfo.pbi_ruid
-          bsdRGID = bsdInfo.pbi_rgid
-      }
+      // SURGICAL FIX: use tc_ucred_reader() from tools_creds.m instead of
+      // heuristic offset probing. The old code tried [0x18,0x20,0x28,0x30] for
+      // proc_ro and [0x08,0x10,0x18,0x20] for ucred in proc_ro, then scored
+      // layouts against proc_pidinfo() BSD API — which returns userspace-cached
+      // values that diverge from kernel ucred (especially for sandboxed/system
+      // processes). This produced contradictory values (gid=250 vs 501, etc).
+      //
+      // tc_ucred_reader() uses sbx_ucredbyproc() which:
+      //   1. Reads proc_ro via OFF_PROC_PROC_RO (correct offset from offsets.m)
+      //   2. Uses kreadsmrguess() for SMR-tagged ucred pointers (not PAC)
+      //   3. Validates via cr_label -> sandbox pointer chain
+      //   4. Reads fields at verified XNU offsets: 0x18(uid), 0x1C(ruid), etc.
+      //
+      // Result: identical ground-truth values to ucred-reader / set-all-ids-zero.
 
-      // ── Known offset variants across iOS 16/17/18 arm64e
-      let procROOffsets:  [UInt64] = [0x18, 0x20, 0x28, 0x30]
-      let ucredROOffsets: [UInt64] = [0x08, 0x10, 0x18, 0x20]
-      let credBaseOffsets: [UInt64] = [0x18, 0x20]
+      var snap = ucred_snapshot_t()
+      let r = tc_ucred_reader(pid, &snap)
+      guard r.code == 0 else { return nil }
 
-      var bestProcRO:   UInt64 = 0
-      var bestUcredPtr: UInt64 = 0
-      var bestCredBase: UInt64 = 0x18
-      var bestScore = -1
-      var bestLayoutName = "unknown"
-
-      for pro in procROOffsets {
-          let proc_ro = _kreadPtrI(procPtr + pro)
-          guard proc_ro != 0, ds_isvalid(proc_ro) else { continue }
-          for uco in ucredROOffsets {
-              let ucredPtr = _kreadPtrI(proc_ro + uco)
-              guard ucredPtr != 0, ds_isvalid(ucredPtr) else { continue }
-              for cBase in credBaseOffsets {
-                  let c_uid   = _kread32I(ucredPtr + cBase)
-                  let c_ruid  = _kread32I(ucredPtr + cBase + 0x04)
-                  let c_svuid = _kread32I(ucredPtr + cBase + 0x08)
-                  let c_gid   = _kread32I(ucredPtr + cBase + 0x0C)
-                  let c_rgid  = _kread32I(ucredPtr + cBase + 0x10)
-                  let c_svgid = _kread32I(ucredPtr + cBase + 0x14)
-                  let c_ng    = _kread32I(ucredPtr + cBase + 0x18)
-
-                  var score = 0
-                  if bsdOk {
-                      if c_uid   == bsdUID  { score += 100 }
-                      if c_gid   == bsdGID  { score += 100 }
-                      if c_ruid  == bsdRUID { score += 50 }
-                      if c_rgid  == bsdRGID { score += 50 }
-                  }
-                  if c_uid   < 100_000 { score += 10 }
-                  if c_gid   < 100_000 { score += 10 }
-                  if c_ruid  < 100_000 { score += 5 }
-                  if c_rgid  < 100_000 { score += 5 }
-                  if c_svgid < 100_000 { score += 5 }
-                  if c_ng <= 16       { score += 200 }
-                  else if c_ng > 1000 { score -= 100 }
-
-                  if score > bestScore {
-                      bestScore = score
-                      bestProcRO   = proc_ro
-                      bestUcredPtr = ucredPtr
-                      bestCredBase = cBase
-                      bestLayoutName = "procRO=+0x\(String(pro,radix:16)) ucredRO=+0x\(String(uco,radix:16)) credBase=+0x\(String(cBase,radix:16))"
-                  }
-              }
-          }
-      }
-
-      guard bestUcredPtr != 0 else { return nil }
-
-      let ucredPtr = bestUcredPtr
-      let b = bestCredBase
-      let cr_uid    = _kread32I(ucredPtr + b)
-      let cr_ruid   = _kread32I(ucredPtr + b + 0x04)
-      let cr_svuid  = _kread32I(ucredPtr + b + 0x08)
-      let cr_gid    = _kread32I(ucredPtr + b + 0x0C)
-      let cr_rgid   = _kread32I(ucredPtr + b + 0x10)
-      let cr_svgid  = _kread32I(ucredPtr + b + 0x14)
-      let cr_ngroups = _kread32I(ucredPtr + b + 0x18)
-
+      // Read groups from kernel (tc_ucred_reader already does this, but we
+      // re-read for display to avoid struct layout mismatch between C/Swift)
       var groups: [UInt32] = []
-      let ng = min(Int(cr_ngroups), 16)
+      let ng = min(Int(snap.cr_ngroups), 16)
       for i in 0..<ng {
-          groups.append(_kread32I(ucredPtr + b + 0x1C + UInt64(i) * 4))
+          groups.append(ds_kread32(snap.kaddr + 0x28 + UInt64(i) * 4))
       }
 
       var out = [String]()
       out.append(String(format: "ucred-info: pid %d", pid))
-      out.append(String(format: "  proc_ro_ptr   : 0x%016llx", bestProcRO))
-      out.append(String(format: "  ucred_ptr     : 0x%016llx", ucredPtr))
-      out.append(String(format: "  layout        : %@", bestLayoutName))
-      out.append(String(format: "  probe_score   : %d", bestScore))
-      out.append("  ──── posix credentials ────")
-      out.append(String(format: "  uid           : %d", cr_uid))
-      out.append(String(format: "  gid           : %d", cr_gid))
-      out.append(String(format: "  ruid          : %d", cr_ruid))
-      out.append(String(format: "  svuid         : %d", cr_svuid))
-      out.append(String(format: "  rgid          : %d", cr_rgid))
-      out.append(String(format: "  svgid         : %d", cr_svgid))
-      out.append(String(format: "  ngroups       : %d", cr_ngroups))
+      out.append(String(format: "  ucred_ptr     : 0x%016llx", snap.kaddr))
+      out.append(String(format: "  layout        : XNU standard (verified via sbx_ucredbyproc)"))
+      out.append("  ---- posix credentials ----")
+      out.append(String(format: "  uid           : %u", snap.cr_uid))
+      out.append(String(format: "  gid           : %u", snap.cr_gid))
+      out.append(String(format: "  ruid          : %u", snap.cr_ruid))
+      out.append(String(format: "  svuid         : %u", snap.cr_svuid))
+      out.append(String(format: "  rgid          : %u", snap.cr_rgid))
+      out.append(String(format: "  svgid         : %u", snap.cr_svgid))
+      out.append(String(format: "  gmuid         : %u", snap.cr_gmuid))
+      out.append(String(format: "  ngroups       : %u", snap.cr_ngroups))
       out.append(String(format: "  groups        : [%@]",
                         groups.map { String($0) }.joined(separator: ", ")))
-      out.append("  ──── mac label ────")
-      out.append("  cr_label      : skipped (PPL-protected on system procs)")
-      out.append("  sandbox       : use 'sandbox-check \(pid)' for policy info")
+      out.append(String(format: "  cr_flags      : 0x%08x", snap.cr_flags))
+      out.append("  ---- mac label ----")
+      out.append("  cr_label      : use 'kstruct ucred <addr>' for label details")
+      out.append("  sandbox       : use 'sandbox-check " + String(pid) + "' for policy info")
       out.append("  amfi          : use 'amfi-status' for AMFI enforcement state")
       return out.joined(separator: "\n")
   }
-
-  // MARK: – vmmap-k
 
   private func _vmmapK(pid: Int32, mgr: laramgr) -> String? {
       guard let procPtr = _findProcI(pid: pid, mgr: mgr) else { return nil }
