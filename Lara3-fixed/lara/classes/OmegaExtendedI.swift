@@ -215,7 +215,8 @@
       out.append(String(format: "  layout        : XNU standard (verified via sbx_ucredbyproc)"))
       out.append("  ---- posix credentials ----")
       out.append(String(format: "  uid           : %u", snap.cr_uid))
-      out.append(String(format: "  gid           : %u", snap.cr_gid))
+      let cr_gid = ds_kread32(snap.kaddr + 0x24)  // cr_groups[0] = effective gid
+      out.append(String(format: "  gid           : %u", cr_gid))
       out.append(String(format: "  ruid          : %u", snap.cr_ruid))
       out.append(String(format: "  svuid         : %u", snap.cr_svuid))
       out.append(String(format: "  rgid          : %u", snap.cr_rgid))
