@@ -84,17 +84,20 @@
           }
       }
 
-      // proc_ro — read only if address looks valid
+      // proc_ro — raw read (may be SMR-tagged, not PAC)
       let procROAddr = ptr + _procROOff
       var proc_ro: UInt64 = 0
       if ds_isvalid(procROAddr) {
-          proc_ro = ds_kreadptr(procROAddr)
+          let raw_proc_ro = ds_kread64(procROAddr)
+          // Strip SMR epoch tag if present (low 4 bits)
+          proc_ro = raw_proc_ro & ~0xF
       }
 
       // task — inside proc_ro
       var taskPtr: UInt64 = 0
       if proc_ro != 0, ds_isvalid(proc_ro) {
-          taskPtr = ds_kreadptr(proc_ro + _taskROOff)
+          let raw_task = ds_kread64(proc_ro + _taskROOff)
+          taskPtr = raw_task & ~0xF
       }
 
       return KProc(kaddr: ptr, pid: pid, uid: uid, name: name,
@@ -121,7 +124,11 @@
               list.append(entry)
           }
           guard ds_isvalid(ptr + _nextOff) else { break }
-          ptr = ds_kreadptr(ptr + _nextOff)
+          // FIX: le_next is a raw kernel pointer, NOT a PAC pointer.
+          // ds_kreadptr applies xpaci() which corrupts non-PAC pointers.
+          // proc-walk uses mgr.kread64 (raw) and works perfectly.
+          // Use ds_kread64 raw to match proc-walk behavior.
+          ptr = ds_kread64(ptr + _nextOff)
       }
 
       return list
