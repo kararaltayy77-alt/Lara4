@@ -1036,25 +1036,75 @@ OmegaCore.register("kread") { arg, mgr in
             let bid = arg.trimmingCharacters(in: .whitespaces)
             guard !bid.isEmpty else { return .fail("app-entitlements: usage: app-entitlements <bundleId>") }
             guard let list = mgr.getAppList(), let info = list[bid], !info.bundleFolder.isEmpty else {
-                return .fail("app-entitlements: '\(bid)' not found")
+                return .fail("app-entitlements: '\(bid)' not found — try 'app-list' for all bundle IDs")
             }
             let fm = FileManager.default
             let base = "\(bundleBase)/\(info.bundleFolder)"
-            guard let contents = try? fm.contentsOfDirectory(atPath: base) else {
-                return .fail("app-entitlements: cannot read bundle")
+
+            // Build candidate binary paths robustly
+            var candidates: [String] = []
+            // 1. Direct path if executable field already includes .app subdir
+            if !info.executable.isEmpty {
+                candidates.append("\(base)/\(info.executable)")
             }
-            let appDir = contents.first(where: { $0.hasSuffix(".app") }) ?? ""
-            let binPath = "\(base)/\(appDir)/\(info.executable)"
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: binPath)) else {
-                return .fail("app-entitlements: cannot read binary at \(binPath)")
-            }
-            if let entsRange = findEntitlements(in: data) {
-                let entsData = data.subdata(in: entsRange)
-                if let text = santanderfs.plisttext(data: entsData) ?? santanderfs.textdecode(data: entsData) {
-                    return .ok("Entitlements for \(bid):\n\n\(text)")
+            // 2. Search for .app subdirectory
+            if let contents = try? fm.contentsOfDirectory(atPath: base) {
+                let appDirs = contents.filter { $0.hasSuffix(".app") }
+                for appDir in appDirs {
+                    let appPath = "\(base)/\(appDir)"
+                    // executable name == appDir without extension
+                    let execName = (appDir as NSString).deletingPathExtension
+                    candidates.append("\(appPath)/\(execName)")
+                    if !info.executable.isEmpty {
+                        candidates.append("\(appPath)/\(info.executable)")
+                        // Sometimes executable is nested: appDir/executable
+                        candidates.append("\(appPath)/\(appDir)/\(info.executable)")
+                    }
+                    // Scan directory for Mach-O files
+                    if let appContents = try? fm.contentsOfDirectory(atPath: appPath) {
+                        for item in appContents where !item.contains(".") || item.hasSuffix("") {
+                            candidates.append("\(appPath)/\(item)")
+                        }
+                    }
                 }
             }
-            return .ok("app-entitlements: could not extract entitlements from \(binPath)\n(may require VFS read)")
+
+            // Try each candidate path
+            for binPath in candidates {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: binPath)),
+                      data.count > 8 else { continue }
+                // Verify it's a Mach-O (magic check)
+                let magic = data.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self) }
+                let isMachO = magic == 0xFEEDFACF || magic == 0xCEFAEDFE ||
+                              magic == 0xFEEDFACE || magic == 0xBEBAFECA
+                guard isMachO else { continue }
+                // Search for embedded entitlements blob (0xFADE7171)
+                if let entsRange = findEntitlements(in: data) {
+                    let entsData = data.subdata(in: entsRange)
+                    if let text = santanderfs.plisttext(data: entsData) ?? santanderfs.textdecode(data: entsData) {
+                        return .ok("Entitlements for \(bid) (from \((binPath as NSString).lastPathComponent)):\n\n\(text)")
+                    }
+                }
+                // Fallback: search raw plist-like region in binary
+                if let xmlRange = data.range(of: Data("<!DOCTYPE plist".utf8)) ??
+                                  data.range(of: Data("<?xml".utf8)) {
+                    let end = data.range(of: Data("</plist>".utf8))?.upperBound ?? data.endIndex
+                    if end > xmlRange.lowerBound {
+                        let entsData = data.subdata(in: xmlRange.lowerBound..<end)
+                        if let text = String(data: entsData, encoding: .utf8) {
+                            return .ok("Entitlements for \(bid) (raw XML):\n\n\(text)")
+                        }
+                    }
+                }
+            }
+
+            // Last resort: read Info.plist to at least confirm the app exists
+            let infoPath = candidates.first.map { ($0 as NSString).deletingLastPathComponent + "/Info.plist" } ?? "\(base)/Info.plist"
+            if let plist = NSDictionary(contentsOf: URL(fileURLWithPath: infoPath)),
+               let name = plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String {
+                return .fail("app-entitlements: binary found for '\(name)' (\(bid)) but entitlements blob not readable — may need VFS kernel access (run 'fetch-kcache' + 'fixoffsets')")
+            }
+            return .fail("app-entitlements: no readable Mach-O found in \(base)\ntried: \(candidates.prefix(3).joined(separator: ", "))")
         }
 
         OmegaCore.register("app-version") { arg, mgr in
@@ -1238,7 +1288,8 @@ OmegaCore.register("kread") { arg, mgr in
 
             guard spawnResult == 0 else {
                 close(pipefd[0])
-                return .fail("exec: \(binary): \(String(cString: strerror(spawnResult)))")
+                let errStr = String(cString: strerror(spawnResult))
+                return .fail("exec: \(binary): \(errStr)  (errno=\(spawnResult))\nhint: ENOENT=2 (not found), EACCES=13 (permission denied), EPERM=1 (not permitted)")
             }
 
             var output = ""
@@ -1317,21 +1368,65 @@ OmegaCore.register("kread") { arg, mgr in
         }
 
         OmegaCore.register("sysctl-all") { _, _ in
-            let keys = [
-                "kern.version", "kern.osversion", "kern.hostname",
-                "kern.maxproc", "kern.maxfiles", "kern.boottime",
-                "hw.machine", "hw.model", "hw.ncpu", "hw.physmem",
-                "hw.pagesize", "hw.cpufrequency_max",
-                "vm.swapusage", "net.inet.tcp.delayed_ack"
-            ]
-            var lines: [String] = []
-            for key in keys {
-                var size = 0
-                if sysctlbyname(key, nil, &size, nil, 0) == 0, size > 0 {
-                    var buf = [CChar](repeating: 0, count: size + 1)
-                    if sysctlbyname(key, &buf, &size, nil, 0) == 0 {
-                        lines.append("  \(key) = \(String(cString: buf))")
+            // Helper: read a sysctl and format it correctly regardless of type
+            func readSysctl(_ key: String) -> String? {
+                var sz = 0
+                guard sysctlbyname(key, nil, &sz, nil, 0) == 0, sz > 0 else { return nil }
+
+                // Try string first (allocate extra byte for null terminator)
+                var strBuf = [CChar](repeating: 0, count: sz + 1)
+                var strSz  = sz
+                if sysctlbyname(key, &strBuf, &strSz, nil, 0) == 0, strSz > 1 {
+                    let s = String(cString: strBuf)
+                    // Reject if it looks like binary garbage (non-printable ASCII ratio > 30%)
+                    let printable = s.unicodeScalars.filter { $0.value >= 32 && $0.value < 127 }.count
+                    if !s.isEmpty, Double(printable) / Double(s.count) > 0.7 {
+                        return s.trimmingCharacters(in: .whitespacesAndNewlines)
                     }
+                }
+
+                // Try Int64
+                if sz == MemoryLayout<Int64>.size {
+                    var v: Int64 = 0; var vSz = sz
+                    if sysctlbyname(key, &v, &vSz, nil, 0) == 0 { return "\(v)" }
+                }
+                // Try Int32
+                if sz == MemoryLayout<Int32>.size {
+                    var v: Int32 = 0; var vSz = sz
+                    if sysctlbyname(key, &v, &vSz, nil, 0) == 0 { return "\(v)" }
+                }
+                // Try UInt64
+                if sz == MemoryLayout<UInt64>.size {
+                    var v: UInt64 = 0; var vSz = sz
+                    if sysctlbyname(key, &v, &vSz, nil, 0) == 0 { return String(format: "0x%llx  (%llu)", v, v) }
+                }
+                // Fall back: hex dump of raw bytes
+                var rawBuf = [UInt8](repeating: 0, count: sz)
+                var rawSz  = sz
+                if sysctlbyname(key, &rawBuf, &rawSz, nil, 0) == 0 {
+                    return "(binary \(rawSz)B) " + rawBuf.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
+                }
+                return nil
+            }
+
+            let keys = [
+                "kern.version", "kern.osversion", "kern.osproductversion",
+                "kern.hostname", "kern.domainname",
+                "kern.maxproc", "kern.maxfiles", "kern.maxfilesperproc",
+                "kern.boottime", "kern.securelevel",
+                "hw.machine", "hw.model", "hw.ncpu", "hw.physmem",
+                "hw.pagesize", "hw.cpufrequency_max", "hw.busfrequency_max",
+                "hw.cachelinesize", "hw.l1icachesize", "hw.l1dcachesize",
+                "hw.l2cachesize", "hw.memsize",
+                "vm.loadavg", "vm.swapusage", "vm.pagesize",
+                "net.inet.tcp.delayed_ack", "net.inet.tcp.mssdflt",
+                "machdep.cpu.brand_string"
+            ]
+
+            var lines: [String] = ["sysctl-all:"]
+            for key in keys {
+                if let val = readSysctl(key) {
+                    lines.append(String(format: "  %-40s = %@", key, val))
                 }
             }
             return .ok(lines.joined(separator: "\n"))
@@ -1347,9 +1442,11 @@ OmegaCore.register("kread") { arg, mgr in
         OmegaCore.register("launchctl") { arg, _ in
             let parts = arg.split(separator: " ").map { String($0) }
             guard !parts.isEmpty else { return .fail("launchctl: usage: launchctl <kickstart|stop|list> [service]") }
-            let binary = "/bin/launchctl"
-            guard FileManager.default.isExecutableFile(atPath: binary) else {
-                return .fail("launchctl: not found at /bin/launchctl")
+            // launchctl lives at different paths depending on iOS version and jailbreak
+            let candidates = ["/usr/bin/launchctl", "/bin/launchctl", "/sbin/launchctl",
+                              "/usr/sbin/launchctl", "/var/jb/usr/bin/launchctl"]
+            guard let binary = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+                return .fail("launchctl: not found in \(candidates.joined(separator: ", "))")
             }
             var allArgs = [binary] + parts
             var pipefd = [Int32](repeating: 0, count: 2)
@@ -1485,22 +1582,39 @@ OmegaCore.register("kread") { arg, mgr in
 
         OmegaCore.register("wc") { arg, _ in
             let fs = OmegaFS.shared
-            let text: String
+            let rawData: Data
             let label: String
             if arg == "-" || arg.isEmpty {
                 guard let buf = OmegaCore.pipeBuffer else { return .fail("wc: no input") }
-                text = buf; label = "-"
+                rawData = Data(buf.utf8)
+                label   = "-"
             } else {
                 let path = fs.resolve(arg)
-                guard let t = try? String(contentsOfFile: path, encoding: .utf8) else {
-                    return .fail("wc: cannot read \(arg)")
+                // Try Data first (works for binary + text files)
+                guard let d = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
+                    // If that fails, use vfs read if available
+                    if let r = try? String(contentsOfFile: path, encoding: .isoLatin1) {
+                        let nl = r.components(separatedBy: "\n").count
+                        let wc = r.split(whereSeparator: { $0.isWhitespace }).count
+                        return .ok(String(format: "  %6d  %6d  %6d  %@", nl, wc, r.utf8.count, arg))
+                    }
+                    return .fail("wc: cannot read \(arg) — check path and permissions")
                 }
-                text = t; label = arg
+                rawData = d
+                label   = arg
             }
-            let lines = text.components(separatedBy: "\n").count
-            let words = text.split { $0.isWhitespace }.count
-            let bytes = text.utf8.count
-            return .ok(String(format: "  %6d  %6d  %6d  %@", lines, words, bytes, label))
+            let bytes = rawData.count
+            var lineCount = 0
+            var wordCount = 0
+            var inWord = false
+            for byte in rawData {
+                if byte == 0x0A { lineCount += 1 }   // newline
+                let isWs = byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+                if isWs { if inWord { wordCount += 1 }; inWord = false }
+                else    { inWord = true }
+            }
+            if inWord { wordCount += 1 }   // last word without trailing newline
+            return .ok(String(format: "  %6d  %6d  %6d  %@", lineCount, wordCount, bytes, label))
         }
 
         OmegaCore.register("sort") { arg, _ in
@@ -1621,17 +1735,67 @@ OmegaCore.register("kread") { arg, mgr in
             guard mgr.dsready else { return .fail("mg-get: exploit not ready") }
             let key = arg.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { return .fail("mg-get: usage: mg-get <key>") }
-            let paths = [
+
+            // ── 1. Try known sysctl / BSD fallbacks for common keys ─────────────
+            let sysctlFallback: [String: String] = [
+                "ProductVersion":     { var b = [CChar](repeating:0,count:64); var s = b.count; if sysctlbyname("kern.osproductversion",&b,&s,nil,0)==0{return String(cString:b)}; return "" }(),
+                "BuildVersion":       { var b = [CChar](repeating:0,count:64); var s = b.count; if sysctlbyname("kern.osversion",&b,&s,nil,0)==0{return String(cString:b)}; return "" }(),
+                "HWModel":            { var b = [CChar](repeating:0,count:64); var s = b.count; if sysctlbyname("hw.model",&b,&s,nil,0)==0{return String(cString:b)}; return "" }(),
+                "CPUArchitecture":    { var b = [CChar](repeating:0,count:64); var s = b.count; if sysctlbyname("hw.machine",&b,&s,nil,0)==0{return String(cString:b)}; return "" }(),
+            ]
+            if let sv = sysctlFallback[key], !sv.isEmpty {
+                return .ok("\(key) = \(sv)  [via sysctl]")
+            }
+
+            // ── 2. Read ProductType from MobileGestalt framework (dlopen) ───────
+            if key == "ProductType" || key == "DeviceName" {
+                let mgLib = "/usr/lib/libMobileGestalt.dylib"
+                if let handle = dlopen(mgLib, RTLD_NOLOAD | RTLD_LAZY) {
+                    typealias MGCopyAnswerFn = @convention(c) (CFString) -> CFTypeRef?
+                    if let sym = dlsym(handle, "MGCopyAnswer") {
+                        let fn = unsafeBitCast(sym, to: MGCopyAnswerFn.self)
+                        if let result = fn(key as CFString) {
+                            dlclose(handle)
+                            return .ok("\(key) = \(result)")
+                        }
+                    }
+                    dlclose(handle)
+                }
+            }
+
+            // ── 3. Search gestalt plist (top-level, CacheData, Cache sub-keys) ──
+            let plistPaths = [
                 "/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist",
                 "/private/var/MobileAsset/MobileGestalt.plist"
             ]
-            for path in paths {
-                let r = mgr.getplistvalue(path: path, key: key)
-                if r.ok, let val = r.value {
-                    return .ok("\(key) = \(val)")
+            for path in plistPaths {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                      let raw  = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+                      let root = raw as? NSDictionary else { continue }
+
+                // Try top-level
+                if let v = root[key] { return .ok("\(key) = \(v)") }
+                // Try CacheData sub-dict
+                for subKey in ["CacheData", "Cache", "data"] {
+                    if let sub = root[subKey] as? NSDictionary, let v = sub[key] {
+                        return .ok("\(key) = \(v)")
+                    }
+                }
+                // Deep search across all sub-dicts
+                for (_, subVal) in root {
+                    if let sub = subVal as? NSDictionary, let v = sub[key] {
+                        return .ok("\(key) = \(v)  [nested]")
+                    }
                 }
             }
-            return .fail("mg-get: key '\(key)' not found in gestalt")
+
+            // ── 4. Also try laramgr helper as last resort ────────────────────────
+            for path in plistPaths {
+                let r = mgr.getplistvalue(path: path, key: key)
+                if r.ok, let val = r.value { return .ok("\(key) = \(val)") }
+            }
+
+            return .fail("mg-get: key '\(key)' not found — try 'mg-keys' to list available keys")
         }
 
         OmegaCore.register("mg-set") { arg, mgr in

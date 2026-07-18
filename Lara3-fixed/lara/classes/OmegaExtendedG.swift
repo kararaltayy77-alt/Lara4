@@ -39,7 +39,7 @@ private func _ghex(_ s: String) -> UInt64? {
 }
 
 func registerPPLShellCommands() {
-    _regPAC(); _regKTRR(); _regSMR(); _regPPL(); _regPPLHunter(); _regKernelObj(); _regHelpPPL()
+    _regPAC(); _regKTRR(); _regSMR(); _regPPL(); _regPPLHunter(); _regKernelObj(); _regKernelMeta(); _regHelpPPL()
 }
 
 private func _regPAC() {
@@ -1002,8 +1002,8 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
                 return .fail("usage: kstruct <type> <addr>  (types: socket, proc, task, ucred, vnode, ipc_port)")
             }
             let type = args[0]
-            guard let addr = UInt64(args[1], radix: 16) else {
-                return .fail("invalid address — use hex (0x...)")
+            guard let addr = _ghex(args[1]) else {
+                return .fail("invalid address — use hex (e.g. 0xfffffff0deadbeef)")
             }
 
             var lines: [String] = []
@@ -1059,11 +1059,11 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
             guard args.count >= 1 else {
                 return .fail("usage: ksearch <pattern_hex> [start_hex] [end_hex]")
             }
-            guard let pattern = UInt64(args[0], radix: 16) else {
+            guard let pattern = _ghex(args[0]) else {
                 return .fail("pattern must be hex (e.g., 0xffffffe000000000)")
             }
-            let start = args.count > 1 ? (UInt64(args[1], radix: 16) ?? ds_get_kernel_base()) : ds_get_kernel_base()
-            let end = args.count > 2 ? (UInt64(args[2], radix: 16) ?? start + 0x1000000) : start + 0x1000000
+            let start = args.count > 1 ? (_ghex(args[1]) ?? ds_get_kernel_base()) : ds_get_kernel_base()
+            let end   = args.count > 2 ? (_ghex(args[2]) ?? start + 0x1000000)   : start + 0x1000000
 
             var found: [UInt64] = []
             var addr = start
@@ -1092,11 +1092,11 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
             guard args.count >= 1 else {
                 return .fail("usage: xref <target_hex> [start_hex] [end_hex]")
             }
-            guard let target = UInt64(args[0], radix: 16) else {
-                return .fail("target must be hex")
+            guard let target = _ghex(args[0]) else {
+                return .fail("target must be hex (e.g. 0xfffffff012345678)")
             }
-            let start = args.count > 1 ? (UInt64(args[1], radix: 16) ?? ds_get_kernel_base()) : ds_get_kernel_base()
-            let end = args.count > 2 ? (UInt64(args[2], radix: 16) ?? start + 0x1000000) : start + 0x1000000
+            let start = args.count > 1 ? (_ghex(args[1]) ?? ds_get_kernel_base()) : ds_get_kernel_base()
+            let end   = args.count > 2 ? (_ghex(args[2]) ?? start + 0x1000000)   : start + 0x1000000
 
             var refs: [UInt64] = []
             var addr = start
@@ -1121,6 +1121,62 @@ private func _hunterPTEWalker(targetVA: UInt64, label: String) -> String {
         }
     }
 
+
+// MARK: - Kernel Meta Commands (offsets / fixoffsets / kslide)
+
+private func _regKernelMeta() {
+
+    OmegaCore.register("kslide") { _, mgr in
+        guard mgr.dsready else { return .fail("kslide: exploit not ready") }
+        let base  = ds_get_kernel_base()
+        let slide = ds_get_kernel_slide()
+        guard base != 0 else { return .fail("kslide: kernel base not available yet") }
+        return .ok(String(format:
+            "kslide:\n" +
+            "  kernel_base  : 0x%016llx\n" +
+            "  kernel_slide : 0x%016llx\n" +
+            "  slide_pages  : %lld  (0x%llx × 0x4000)",
+            base, slide, slide / 0x4000, slide / 0x4000))
+    }
+
+    OmegaCore.register("offsets") { _, mgr in
+        guard mgr.dsready else { return .fail("offsets: exploit not ready") }
+        guard let dict = alloffs() as? [String: Any], !dict.isEmpty else {
+            return .fail("offsets: alloffs() returned nil — run fixoffsets first")
+        }
+        var lines = ["Kernel offsets (\(dict.count) entries):"]
+        let sorted = dict.keys.sorted()
+        for k in sorted {
+            if let v = dict[k] as? NSNumber {
+                let u = v.uint32Value
+                if u != 0 {
+                    lines.append(String(format: "  %-42s 0x%08x  (%u)", (k as NSString).utf8String!, u, u))
+                } else {
+                    lines.append(String(format: "  %-42s (not resolved)", (k as NSString).utf8String!))
+                }
+            } else {
+                lines.append("  \(k) = \(dict[k] ?? "?")")
+            }
+        }
+        return .ok(lines.joined(separator: "\n"))
+    }
+
+    OmegaCore.register("fixoffsets") { _, mgr in
+        guard mgr.dsready else { return .fail("fixoffsets: exploit not ready") }
+        let kcPath = getkerncache()
+        guard let path = kcPath, FileManager.default.fileExists(atPath: path) else {
+            return .fail("fixoffsets: kernel cache not available — try 'fetch-kcache' first")
+        }
+        offsets_init()
+        let r = verifykernoffsets()
+        if r {
+            return .ok("fixoffsets: offsets re-initialised and verified ✔")
+        } else {
+            let zeroCount = (alloffs() as? [String: NSNumber])?.values.filter { $0.uint32Value == 0 }.count ?? 0
+            return .ok("fixoffsets: offsets re-initialised (verify=false, \(zeroCount) still unresolved — dynamic XPF may fill them at runtime)")
+        }
+    }
+}
 
 private func _regHelpPPL() {
     OmegaCore.register("help-ppl") { _, _ in

@@ -161,9 +161,32 @@
   // ── CS flags ──────────────────────────────────────────────────────────────────
 
   private func _readCSFlags(_ proc: KProc) -> UInt32 {
-      for off: UInt64 in [0x300, 0x2c4, 0x2e0] {
+      // CS_VALID (0x1) or CS_SIGNED (0x10000) must be set for a real cs_flags value.
+      // iOS 16-18 moved cs_flags from proc directly into proc_ro.
+      // Try proc_ro first if we have a non-zero pointer.
+      let validMask: UInt32 = 0x0001 | 0x10000   // CS_VALID | CS_SIGNED
+      let noHighGarbage: UInt32 = 0x0FFF_FFFF    // reasonable mask — high 4 bits should be 0
+
+      // ── 1. Read from proc_ro (canonical iOS 16+ location) ──────────────────
+      if proc.procROPtr != 0, ds_isvalid(proc.procROPtr) {
+          // Known proc_ro cs_flags offsets across iOS 16–18:
+          for off: UInt64 in [0x1C, 0x20, 0x24, 0x28, 0x30, 0x14] {
+              let v = ds_kread32(proc.procROPtr + off)
+              if (v & validMask) != 0, (v & ~noHighGarbage) == 0 { return v }
+          }
+      }
+
+      // ── 2. Fall back to reading directly from proc struct ───────────────────
+      // Offsets vary by iOS version: iOS 15=0x2c0, 16=0x2e0, 17-18=0x300
+      for off: UInt64 in [0x300, 0x2e0, 0x2c4, 0x2c0, 0x2a0, 0x320] {
           let v = ds_kread32(proc.kaddr + off)
-          if v != 0 { return v }
+          if (v & validMask) != 0, (v & ~noHighGarbage) == 0 { return v }
+      }
+
+      // ── 3. Wider scan on proc struct (last resort) ──────────────────────────
+      for off in stride(from: UInt64(0x280), through: 0x380, by: 4) {
+          let v = ds_kread32(proc.kaddr + off)
+          if (v & 0x0001) != 0, (v & 0xFF00_0000) == 0, v != 0xFFFF_FFFF { return v }
       }
       return 0
   }
@@ -190,6 +213,28 @@
   // MARK: – Command Registration
 
   func registerExtendedECommands() {
+
+      // ── proc-csflags <pid|name> ───────────────────────────────────────────────
+      OmegaCore.register("proc-csflags") { rawArg, mgr in
+          guard mgr.dsready else { return .fail("proc-csflags: exploit not ready") }
+          let arg = rawArg.trimmingCharacters(in: .whitespaces)
+          guard !arg.isEmpty else {
+              return .fail("proc-csflags: usage — proc-csflags <pid|name>")
+          }
+          guard let proc = _findProc(arg: arg, mgr: mgr) else {
+              return .fail("proc-csflags: process '\(arg)' not found")
+          }
+          let flags = _readCSFlags(proc)
+          let desc  = _csDescription(flags)
+          return .ok(String(format:
+              "proc-csflags: %@ (pid %d)\n" +
+              "  proc_kaddr : 0x%016llx\n" +
+              "  proc_ro    : 0x%016llx\n" +
+              "  cs_flags   : 0x%08x\n" +
+              "  bits       : %@",
+              proc.name, proc.pid, proc.kaddr, proc.procROPtr,
+              flags, desc.isEmpty ? "(none set)" : desc))
+      }
 
       // ── kernel-info ───────────────────────────────────────────────────────────
       OmegaCore.register("kernel-info") { _, mgr in

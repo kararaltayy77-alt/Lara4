@@ -635,7 +635,7 @@ help-priv: Privilege Escalation Commands (OmegaExtendedF)
     set-euid-zero                   cr_uid (effective) → 0
     set-egid-zero                   cr_gmuid → 0
     set-all-ids-zero                All UID/GID fields → 0 (atomic)
-    ucred-reader [pid|name]         Full ucred struct dump
+    ucred-reader [pid|name]         Full ucred struct dump (kernel)
     ucred-writer <p> <off> <val>    Write 32-bit field at ucred+offset
     ucred-clone <src> <dst>         Copy credentials src→dst
 
@@ -648,51 +648,49 @@ help-priv: Privilege Escalation Commands (OmegaExtendedF)
     cs-set-debuggable               Set CS_DEBUGGED
     cs-remove-all-restrictions      Strip RESTRICT+ENFORCEMENT+KILL
 
+  PROCESS INSPECTION:
+    proc-info <pid|name>            Kernel proc struct summary
+    proc-csflags <pid|name>         Read cs_flags from kernel
+    proc-tree                       All processes with kaddrs
+    ucred-info <pid|name>           ucred dump (kernel level)
+    task-info <pid|name>            task struct + thread list
+    thread-list <pid|name>          Thread states via task_threads
+
   PROCESS PRIVILEGE:
     grant-root-to-process <p>       Full ucred+cs root grant
     proc-uid-inspector [pid|name]   Read uid/gid/cred
     inject-uid-to-process <p> <uid> Set specific UID in target
     find-root-process               Find uid=0 proc with writable ucred
-    escalate-all-processes          Elevate trusted jailbreak daemons
     copy-root-credentials <src> <d> Clone ucred src→dst
 
   AMFI + ENTITLEMENTS:
     amfi-disable-globally           Kernel-patch mac_proc_enforce=0
     amfi-bypass-signature-check <p> Patch AMFI label for proc
-    amfi-whitelist-app <bundle> [p] Add to kernel trust cache
     amfi-status-check               Full AMFI state report
     entitlement-reader [pid|name]   Dump entitlement flags
     entitlement-grant-all [pid]     Set maximum CS flags
 
   SANDBOX:
     sandbox-rules-dump <pid|name>   Dump sandbox policy
-    sandbox-token-elevate [path]    Issue root sandbox extension
-    sandbox-complete-escape         Full sbx_escape+ucred chain
-    sandbox-allow-all-paths         Inject read-write root extension
+    sbx-info                        Sandbox token and state
+    sbx-token <pid>                 Sandbox token addr for process
 
   SECURITY LABELS:
     security-label-read <pid|name>  All MAC label slots
-    security-context-elevate [pid]  Set sandbox label → NULL
-    security-policy-bypass [pid]    mac_proc_enforce+label bypass
 
   SYSTEM FILES (requires vfsready):
     system-file-read <path>         Read protected file
     system-file-write <path> <data> Write protected file
-    system-binary-patch <p> <o> <h> Patch bytes in binary
 
   SERVICES:
-    kill-security-processes         Stop MDM daemons
-    system-daemon-control <args>    launchctl command
-    device-management-bypass        Disable MDM supervision flags
+    launchctl <kickstart|stop|list> Manage launchd services
 
   PERSISTENCE + MONITORING:
     persistence-check               Print uid/ds/vfs/sbx state
     process-hide <pid|name>         Rename proc comm string
     file-hide <path>                Set UF_HIDDEN attribute
-    audit-log-clean                 Session cleanup (kernel patches)
     monitor-root-status             Live privilege snapshot
     detect-revocation               Check if root was revoked
-    execute-as-root <cmd>           posix_spawn as root
 ─────────────────────────────────────────────────────────────────────────
 """)
     }

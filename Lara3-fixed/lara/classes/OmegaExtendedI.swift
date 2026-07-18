@@ -120,8 +120,13 @@
       let threadsNextOff = UInt64(off_task_threads_next)
       let excGuardOff   = UInt64(off_task_task_exc_guard)
       let threadNextOff = UInt64(off_thread_task_threads_next)
-      let ctidOff       = UInt64(off_thread_ctid)
-      let kstackOff     = UInt64(off_thread_machine_kstackptr)
+      // kstack offset: use runtime value with known iOS fallbacks when unresolved
+      // iOS 16-17: 0xe8,  iOS 18.0-18.4: 0xf0,  iOS 18.5+: probe
+      let kstackOff: UInt64 = off_thread_machine_kstackptr != 0
+          ? UInt64(off_thread_machine_kstackptr) : 0xf0
+      // ctid offset fallback (iOS 16-17: 0x408, iOS 18: 0x418)
+      let ctidOffFallback: UInt64 = off_thread_ctid != 0
+          ? UInt64(off_thread_ctid) : 0x418
 
       let procRo  = _kreadPtrI(procPtr + procRoOff)
       let taskPtr = _kreadPtrI(procRo  + prTaskOff)
@@ -158,9 +163,16 @@
           var idx = 0
           while threadPtr != 0, !threadSeen.contains(threadPtr), idx < 8 {
               threadSeen.insert(threadPtr)
-              let tid    = _kread64I(threadPtr + ctidOff)
+              let tid    = _kread64I(threadPtr + ctidOffFallback)
               let state  = _kread32I(threadPtr + 0x14)
-              let kstack = _kreadPtrI(threadPtr + kstackOff)
+              // Try resolved kstack offset first, then probe nearby offsets
+              var kstack = _kreadPtrI(threadPtr + kstackOff)
+              if kstack == 0 {
+                  for probeOff: UInt64 in [0xe8, 0xf0, 0xf8, 0x100] where probeOff != kstackOff {
+                      let v = _kreadPtrI(threadPtr + probeOff)
+                      if v != 0, ds_isvalid(v) { kstack = v; break }
+                  }
+              }
               lines.append(String(format: "  [%d] thread@0x%llx  tid=%llu  state=0x%x  kstack=0x%llx",
                                   idx, threadPtr, tid, state, kstack))
               threadPtr = ds_kreadptr(threadPtr + threadNextOff)
@@ -215,8 +227,10 @@
       out.append(String(format: "  layout        : XNU standard (verified via sbx_ucredbyproc)"))
       out.append("  ---- posix credentials ----")
       out.append(String(format: "  uid           : %u", snap.cr_uid))
-      let cr_gid = ds_kread32(snap.kaddr + 0x24)  // cr_groups[0] = effective gid
-      out.append(String(format: "  gid           : %u", cr_gid))
+      // cr_ngroups is at ucred+0x24 (short); cr_groups[] starts at ucred+0x28
+      // cr_groups[0] is the effective GID (primary group)
+      let cr_gid = groups.first ?? snap.cr_rgid
+      out.append(String(format: "  gid           : %u  (cr_groups[0])", cr_gid))
       out.append(String(format: "  ruid          : %u", snap.cr_ruid))
       out.append(String(format: "  svuid         : %u", snap.cr_svuid))
       out.append(String(format: "  rgid          : %u", snap.cr_rgid))
