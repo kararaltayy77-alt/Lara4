@@ -385,7 +385,7 @@ final class ProcessLayer {
             let kpid = Int32(bitPattern: mgr.kread32(address: proc_ptr + pidOff))
             guard kpid > 0 else {
                 skipped += 1
-                proc_ptr = mgr.kread64(address: proc_ptr + nextOff)
+                proc_ptr = mgr.kread64(address: proc_ptr + nextOff) & ~0xF  // strip SMR epoch tag
                 continue
             }
 
@@ -394,7 +394,7 @@ final class ProcessLayer {
             let rawKernel = RawProcKernelData(
                 pid: kpid,
                 kernelNameBuf: nameBuf,
-                nextPtr: mgr.kread64(address: proc_ptr + nextOff)
+                nextPtr: mgr.kread64(address: proc_ptr + nextOff) & ~0xF  // strip SMR epoch tag
             )
 
             var bsd       = proc_bsdinfo()
@@ -449,7 +449,7 @@ final class ProcessLayer {
                 source: .kernelAllproc, blockedReason: rsn
             ))
 
-            proc_ptr = rawKernel.nextPtr
+            proc_ptr = rawKernel.nextPtr & ~0xF  // strip SMR epoch tag
         }
 
         if walked >= 2048 { globallogger.log("(proc) walk: WARN hit limit=2048") }
