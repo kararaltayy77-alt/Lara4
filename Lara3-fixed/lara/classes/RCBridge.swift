@@ -234,8 +234,10 @@ final class RCBridge {
             out += "│ PID   Process            UID   KAddr  │\n"
             out += "│ ──────────────────────────────────────│\n"
             for i in 0..<Int(count) {
-                let entry = list[i]
-                let name = String(cString: &entry.name.0)
+                var entry = list[i]
+                let name = withUnsafePointer(to: &entry.name.0) { ptr in
+                    String(cString: ptr)
+                }
                 out += String(format: "│ %-5d %-20s %-3d   %llx │\n",
                               entry.pid, name, entry.uid, entry.kaddr)
             }
@@ -273,10 +275,11 @@ final class RCBridge {
 
             var state = arm_thread_state64_t()
             memset(&state, 0, MemoryLayout<arm_thread_state64_t>.size)
-            withUnsafeMutablePointer(to: &state) { ptr in
-                ptr.pointee.__pc = pc
-                ptr.pointee.__x.0 = arg1
-                ptr.pointee.__x.1 = arg2
+            withUnsafeMutableBytes(of: &state) { rawPtr in
+                let ptr = rawPtr.bindMemory(to: UInt64.self)
+                ptr[32] = pc    // __pc offset
+                ptr[0] = arg1   // x0
+                ptr[1] = arg2   // x1
             }
 
             var newThread: thread_t = 0
@@ -376,7 +379,11 @@ final class RCBridge {
 
             xpc_connection_set_event_handler(conn) { event in
                 if xpc_get_type(event) == XPC_TYPE_ERROR {
-                    result = "XPC ERROR: " + String(cString: xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION) ?? "unknown")
+                    if let desc = xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION) {
+                    result = "XPC ERROR: " + String(cString: desc)
+                } else {
+                    result = "XPC ERROR: unknown"
+                }
                 }
             }
             xpc_connection_resume(conn)
