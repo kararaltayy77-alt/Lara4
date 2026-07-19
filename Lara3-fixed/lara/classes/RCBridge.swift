@@ -29,12 +29,12 @@ final class RCBridge {
     @_silgen_name("ds_get_our_proc")      static func ds_get_our_proc() -> UInt64
     @_silgen_name("ds_get_our_task")      static func ds_get_our_task() -> UInt64
     @_silgen_name("ourproc")              static func ourproc() -> UInt64
-    @_silgen_name("procbypid")            static func procbypid(_ pid: pid_t) -> UInt64
-    @_silgen_name("procbyname")           static func procbyname(_ name: UnsafePointer<CChar>) -> UInt64
-    @_silgen_name("taskbyproc")           static func taskbyproc(_ proc: UInt64) -> UInt64
     @_silgen_name("proclist")             static func proclist(_ search: UnsafePointer<CChar>, _ out_count: UnsafeMutablePointer<Int32>) -> UnsafeMutablePointer<proc_entry_t>
     @_silgen_name("free_proclist")        static func free_proclist(_ list: UnsafeMutablePointer<proc_entry_t>)
     @_silgen_name("hexdump")              static func hexdump_c(_ data: UnsafeRawPointer, _ size: Int)
+    @_silgen_name("procbyname")           static func procbyname(_ name: UnsafePointer<CChar>) -> UInt64
+    @_silgen_name("procbypid")            static func procbypid(_ pid: pid_t) -> UInt64
+    @_silgen_name("taskbyproc")           static func taskbyproc(_ proc: UInt64) -> UInt64
 
     // ── Offset externs (from offsets.h) ─────────────────────────────────
     @_silgen_name("off_task_itk_space")           static var off_task_itk_space: UInt32
@@ -90,7 +90,6 @@ final class RCBridge {
         }
 
         // ── 2. rc-task-port-obtain <pid> ────────────────────────────────
-        // Uses kernel R/W to read task port from proc->task->itk_space
         OmegaCore.register("rc-task-port-obtain") { arg, mgr in
             guard mgr.dsready else {
                 return .fail("rc-task-port-obtain: exploit not ready — run \"run\" first")
@@ -99,34 +98,27 @@ final class RCBridge {
             guard let pidStr = parts.first, let pid = Int32(pidStr) else {
                 return .fail("rc-task-port-obtain: usage: rc-task-port-obtain <pid>")
             }
-            // 1. Resolve proc via kernel
             let proc = procbypid(pid)
             guard proc != 0 else {
-                return .fail(String(format: "rc-task-port-obtain: procbypid(%d) returned 0x0 — process not found in kernel", pid))
+                return .fail(String(format: "rc-task-port-obtain: procbypid(%d) returned 0x0", pid))
             }
-            // 2. Resolve task from proc
             let task = taskbyproc(proc)
             guard task != 0 else {
                 return .fail(String(format: "rc-task-port-obtain: taskbyproc(0x%llx) returned 0x0", proc))
             }
-            // 3. Read itk_space from task
             let itk_space = ds_kread64(task + UInt64(off_task_itk_space))
             guard itk_space != 0 else {
                 return .fail(String(format: "rc-task-port-obtain: task 0x%llx has no itk_space", task))
             }
-            // 4. Read ipc_space is_table
             let is_table = ds_kread64(itk_space + UInt64(off_ipc_space_is_table))
             guard is_table != 0 else {
                 return .fail(String(format: "rc-task-port-obtain: ipc_space 0x%llx has no is_table", itk_space))
             }
-            // 5. Read first ipc_entry (index 0 = self)
-            let entry_size = UInt64(sizeof_ipc_entry)
             let entry0 = is_table
             let ie_object = ds_kread64(entry0 + UInt64(off_ipc_entry_ie_object))
             guard ie_object != 0 else {
                 return .fail("rc-task-port-obtain: no ipc_entry found")
             }
-            // 6. Read kobject from port
             let kobject = ds_kread64(ie_object + UInt64(off_ipc_port_ip_kobject))
             guard kobject != 0 else {
                 return .fail("rc-task-port-obtain: port has no kobject")
@@ -211,14 +203,11 @@ final class RCBridge {
                     return .fail("rc-memory-write: invalid hex at position \(i * 2)")
                 }
             }
-            // Snapshot before write
             let snapId = bridge.createSnapshot(addr: addr, size: size, name: "rc-memory-write")
-            // Perform kernel write
             let ok = ds_kwritebuf(addr, buf, UInt64(size))
             guard ok else {
                 return .fail(String(format: "rc-memory-write: ds_kwritebuf failed at 0x%llx", addr))
             }
-            // Verify
             let vbuf = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
             defer { vbuf.deallocate() }
             ds_kreadbuf(addr, vbuf, UInt64(size))
@@ -232,7 +221,10 @@ final class RCBridge {
         // ── 5. rc-process-enum ──────────────────────────────────────────
         OmegaCore.register("rc-process-enum") { _, _ in
             var count: Int32 = 0
-            var emptyName: CChar = 0\n            guard let list = withUnsafePointer(to: &emptyName) { ptr in\n                proclist(ptr, &count)\n            } else {
+            var emptyName: CChar = 0
+            guard let list = withUnsafePointer(to: &emptyName, { ptr in
+                proclist(ptr, &count)
+            }) else {
                 return .fail("rc-process-enum: proclist() returned NULL")
             }
             defer { free_proclist(list) }
@@ -252,7 +244,6 @@ final class RCBridge {
         }
 
         // ── 6. rc-thread-create <pid> <pc> <arg1> [arg2] ────────────────
-        // Uses real thread_create_running via Mach API
         OmegaCore.register("rc-thread-create") { arg, mgr in
             guard mgr.dsready else {
                 return .fail("rc-thread-create: exploit not ready — run \"run\" first")
@@ -266,11 +257,9 @@ final class RCBridge {
             }
             let arg2 = parts.count > 3 ? (UInt64(parts[3], radix: 16) ?? 0) : 0
 
-            // Try task_for_pid first (may fail without tfp0)
             var taskPort: mach_port_t = 0
             let kr = task_for_pid(mach_task_self_, pid, &taskPort)
             guard kr == KERN_SUCCESS else {
-                // Fallback: use kernel R/W to get task port
                 let proc = procbypid(pid)
                 guard proc != 0 else {
                     return .fail(String(format: "rc-thread-create: procbypid(%d) failed", pid))
@@ -282,12 +271,13 @@ final class RCBridge {
                 return .fail(String(format: "rc-thread-create: task_for_pid failed (kr=0x%x).\n  proc=0x%llx task=0x%llx\n  Use kernel R/W to patch task port manually.", kr, proc, task))
             }
 
-            // Build ARM64 thread state
             var state = arm_thread_state64_t()
             memset(&state, 0, MemoryLayout<arm_thread_state64_t>.size)
-            withUnsafeMutablePointer(to: &state) { ptr in\n                ptr.pointee.__pc = pc\n            }
-            withUnsafeMutablePointer(to: &state) { ptr in ptr.pointee.__x.0 = arg1 }
-            withUnsafeMutablePointer(to: &state) { ptr in ptr.pointee.__x.1 = arg2 }
+            withUnsafeMutablePointer(to: &state) { ptr in
+                ptr.pointee.__pc = pc
+                ptr.pointee.__x.0 = arg1
+                ptr.pointee.__x.1 = arg2
+            }
 
             var newThread: thread_t = 0
             let tr = thread_create_running(
@@ -316,7 +306,6 @@ final class RCBridge {
         }
 
         // ── 7. rc-dylib-inject <pid> <path> ─────────────────────────────
-        // Real injection: uses kernel R/W to patch target proc env
         OmegaCore.register("rc-dylib-inject") { arg, mgr in
             guard mgr.dsready else {
                 return .fail("rc-dylib-inject: exploit not ready — run \"run\" first")
@@ -330,23 +319,19 @@ final class RCBridge {
                 return .fail("rc-dylib-inject: dylib not found: \(path)")
             }
 
-            // 1. Resolve target proc
             let proc = procbypid(pid)
             guard proc != 0 else {
                 return .fail(String(format: "rc-dylib-inject: procbypid(%d) returned 0x0", pid))
             }
-            // 2. Resolve task
             let task = taskbyproc(proc)
             guard task != 0 else {
                 return .fail(String(format: "rc-dylib-inject: taskbyproc(0x%llx) returned 0x0", proc))
             }
-            // 3. Resolve vm_map for memory allocation
             let vm_map = ds_kread64(task + UInt64(off_task_map))
             guard vm_map != 0 else {
                 return .fail(String(format: "rc-dylib-inject: task 0x%llx has no vm_map", task))
             }
 
-            // For now: report kernel addresses found (real alloc needs vm_map walk)
             var out = "\n╔══════════════════════════════════════╗\n"
             out += "║  Dylib Injection (Kernel R/W)       ║\n"
             out += "╠══════════════════════════════════════╣\n"
@@ -367,7 +352,6 @@ final class RCBridge {
         }
 
         // ── 8. rc-xpc-send <service> <method> [args] ─────────────────────
-        // Real XPC call using xpc_connection_t
         OmegaCore.register("rc-xpc-send") { arg, _ in
             let parts = arg.split(separator: " ", maxSplits: 2).map(String.init)
             guard parts.count >= 2 else {
@@ -436,8 +420,7 @@ final class RCBridge {
         }
 
         // ── 9. rc-launchd-spawn <binary> [args...] ───────────────────────
-        // Real spawn using posix_spawn (works after root)
-        OmegaCore.register("rc-launchd-spawn") { arg, mgr in
+        OmegaCore.register("rc-launchd-spawn") { arg, _ in
             let parts = arg.split(separator: " ").map(String.init)
             guard let binary = parts.first else {
                 return .fail("rc-launchd-spawn: usage: rc-launchd-spawn <binary> [args...]")
@@ -446,7 +429,6 @@ final class RCBridge {
                 return .fail("rc-launchd-spawn: binary not found: \(binary)")
             }
 
-            // Build argv
             var argv: [String] = [binary]
             if parts.count > 1 {
                 argv.append(contentsOf: parts[1...])
@@ -458,7 +440,6 @@ final class RCBridge {
             var attr: posix_spawnattr_t?
             posix_spawnattr_init(&attr)
 
-            // If we have root, set uid/gid to 0
             let ret = posix_spawn(&pid, binary, nil, &attr, &cargv, environ)
             posix_spawnattr_destroy(&attr)
             for ptr in cargv { free(ptr) }
@@ -516,11 +497,11 @@ final class RCBridge {
             out += "│ 2.  rc-task-port-obtain <pid>          │\n"
             out += "│     Resolve task port via kernel R/W   │\n"
             out += "│                                        │\n"
-            out += "│ 3.  rc-memory-read <addr> <size>       │\n"
+            out += "│ 3.  rc-memory-read <addr> <sz>         │\n"
             out += "│     Read memory via ds_kreadbuf        │\n"
             out += "│                                        │\n"
             out += "│ 4.  rc-memory-write <addr> <hex>       │\n"
-            out += "│     Write memory via ds_kwritebuf      │\n"
+            out += "│     Write memory (auto-snapshot)       │\n"
             out += "│                                        │\n"
             out += "│ 5.  rc-process-enum                    │\n"
             out += "│     List processes via proclist()      │\n"
@@ -532,7 +513,7 @@ final class RCBridge {
             out += "│     Resolve target for dylib injection │\n"
             out += "│                                        │\n"
             out += "│ 8.  rc-xpc-send <svc> <method> [args]  │\n"
-            out += "│     Real XPC call via xpc_connection   │\n"
+            out += "│     Real XPC call                      │\n"
             out += "│                                        │\n"
             out += "│ 9.  rc-launchd-spawn <bin> [args]      │\n"
             out += "│     Spawn via posix_spawn              │\n"
