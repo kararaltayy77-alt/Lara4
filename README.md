@@ -116,3 +116,6 @@ The app includes a health check timer that runs every 30 seconds:
 ## Credits
 
 Original Lara tool by ruter. Hardening and session stability fixes by the Lara4 team.
+
+
+<!-- Build trigger: Mon Jul 20 02:45:38 2026 -->
