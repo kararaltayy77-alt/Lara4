@@ -232,7 +232,7 @@ final class RCBridge {
         // ── 5. rc-process-enum ──────────────────────────────────────────
         OmegaCore.register("rc-process-enum") { _, _ in
             var count: Int32 = 0
-            guard let list = proclist(nil, &count) else {
+            var emptyName: CChar = 0\n            guard let list = withUnsafePointer(to: &emptyName) { ptr in\n                proclist(ptr, &count)\n            } else {
                 return .fail("rc-process-enum: proclist() returned NULL")
             }
             defer { free_proclist(list) }
@@ -285,16 +285,16 @@ final class RCBridge {
             // Build ARM64 thread state
             var state = arm_thread_state64_t()
             memset(&state, 0, MemoryLayout<arm_thread_state64_t>.size)
-            state.__pc = pc
-            state.__x.0 = arg1
-            state.__x.1 = arg2
+            withUnsafeMutablePointer(to: &state) { ptr in\n                ptr.pointee.__pc = pc\n            }
+            withUnsafeMutablePointer(to: &state) { ptr in ptr.pointee.__x.0 = arg1 }
+            withUnsafeMutablePointer(to: &state) { ptr in ptr.pointee.__x.1 = arg2 }
 
             var newThread: thread_t = 0
             let tr = thread_create_running(
                 taskPort,
                 ARM_THREAD_STATE64,
                 &state,
-                UInt32(ARM_THREAD_STATE64_COUNT),
+                UInt32(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<UInt32>.size),
                 &newThread
             )
             guard tr == KERN_SUCCESS else {
@@ -380,7 +380,7 @@ final class RCBridge {
             let conn = xpc_connection_create_mach_service(
                 service,
                 DispatchQueue.global(qos: .userInitiated),
-                XPC_CONNECTION_MACH_SERVICE_PRIVILEGED
+                UInt64(XPC_CONNECTION_MACH_SERVICE_PRIVILEGED)
             )
             guard conn != nil else {
                 return .fail("rc-xpc-send: xpc_connection_create_mach_service returned NULL")
@@ -459,13 +459,6 @@ final class RCBridge {
             posix_spawnattr_init(&attr)
 
             // If we have root, set uid/gid to 0
-            if getuid() == 0 {
-                var uid: uid_t = 0
-                var gid: gid_t = 0
-                posix_spawnattr_setuid_np(&attr, uid)
-                posix_spawnattr_setgid_np(&attr, gid)
-            }
-
             let ret = posix_spawn(&pid, binary, nil, &attr, &cargv, environ)
             posix_spawnattr_destroy(&attr)
             for ptr in cargv { free(ptr) }
