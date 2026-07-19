@@ -323,6 +323,21 @@ LARA Shell — full command reference (iSH-level access)
   watch64 <addr> [int] [dur]   watch 64-bit value changes
   trace-write <addr> [dur]     log all writes to address
 
+
+  ── RC FRAMEWORK ────────────────────────────────────────
+  rc-kernel-detect             detect kernel base & slide
+  rc-task-port-obtain <pid>    resolve task port via kernel R/W
+  rc-memory-read <addr> <sz>   read memory via ds_kreadbuf
+  rc-memory-write <addr> <hex> write memory (auto-snapshot)
+  rc-process-enum              list processes via proclist()
+  rc-thread-create <pid> <pc>  create thread via Mach API
+  rc-dylib-inject <pid> <path> resolve target for dylib injection
+  rc-xpc-send <svc> <method>   real XPC call
+  rc-launchd-spawn <bin>       spawn via posix_spawn
+  rc-rollback <id>             restore memory snapshot
+  rc-snapshot-list             show all snapshots
+  rc-snapshot-cleanup          remove all snapshots
+  rc-help                      RC framework help
   ── SNAPSHOT ENGINE ──────────────────────────────────────
   snapshot kernel              save proc/task/ucred/socket/vm_map
   snapshot-diff                compare current state to snapshot
