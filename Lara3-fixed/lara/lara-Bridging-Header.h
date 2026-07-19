@@ -19,6 +19,7 @@
   #import "ppl.h"
   #import "ppl_physmap.h"
   #import "roothunter.h"
+#import "stage1_root.h"
 
   // tools_creds.h defines tool_result_t as an anonymous struct.
   // tools_pac.h and tools_system.h guard it with #ifndef tool_result_t —

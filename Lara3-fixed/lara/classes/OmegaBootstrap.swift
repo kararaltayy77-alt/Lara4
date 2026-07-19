@@ -598,6 +598,22 @@ private static func registerKernel() {
             }
         }
 
+        OmegaCore.register("stage1") { _, mgr in
+            guard mgr.dsready else { return .fail("stage1: exploit not ready — run 'run' first") }
+            let result = stage1_root()
+            if result == 0 {
+                return .ok("stage1: SUCCESS — kernel UID=0, TF_PLATFORM set ✔️")
+            } else if result == -2 {
+                return .fail("stage1: thread_ro ucred is PPL — need STAGE 2 (PAC bypass)")
+            } else if result == -3 {
+                return .fail("stage1: no valid thread_ro found — need STAGE 2 (PAC bypass)")
+            } else if result == -4 {
+                return .fail("stage1: write failed silently — need STAGE 2 (PAC bypass)")
+            } else {
+                return .fail("stage1: failed — check kernel R/W stability")
+            }
+        }
+
         OmegaCore.register("ppl-bypass") { _, mgr in
             guard mgr.dsready else { return .fail("ppl-bypass: exploit not ready — run 'run' first") }
             let result = ppl_bypass()
