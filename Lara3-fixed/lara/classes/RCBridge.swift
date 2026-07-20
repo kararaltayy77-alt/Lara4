@@ -378,7 +378,7 @@ final class RCBridge {
                 DispatchQueue.global(qos: .userInitiated),
                 UInt64(XPC_CONNECTION_MACH_SERVICE_PRIVILEGED)
             )
-            guard conn != nil else {
+            guard let conn = conn else {
                 return .fail("rc-xpc-send: xpc_connection_create_mach_service returned NULL")
             }
 
