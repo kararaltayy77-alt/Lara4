@@ -29,8 +29,10 @@ final class RCBridge {
     @_silgen_name("ds_get_our_proc")      static func ds_get_our_proc() -> UInt64
     @_silgen_name("ds_get_our_task")      static func ds_get_our_task() -> UInt64
     @_silgen_name("ourproc")              static func ourproc() -> UInt64
-    @_silgen_name("proclist")             static func proclist(_ search: UnsafePointer<CChar>, _ out_count: UnsafeMutablePointer<Int32>) -> UnsafeMutablePointer<proc_entry_t>
+    @_silgen_name("proclist")             static func proclist(_ search: UnsafePointer<CChar>, _ out_count: UnsafeMutablePointer<Int32>) -> UnsafeMutablePointer<proc_entry_t>?
     @_silgen_name("free_proclist")        static func free_proclist(_ list: UnsafeMutablePointer<proc_entry_t>)
+    @_silgen_name("xpc_connection_create_mach_service")
+    private static func _xpcCreateMachService(_ name: UnsafePointer<CChar>!, _ targetq: DispatchQueue?, _ flags: UInt64) -> xpc_connection_t!
     @_silgen_name("hexdump")              static func hexdump_c(_ data: UnsafeRawPointer, _ size: Int)
     @_silgen_name("procbyname")           static func procbyname(_ name: UnsafePointer<CChar>) -> UInt64
     @_silgen_name("procbypid")            static func procbypid(_ pid: pid_t) -> UInt64
