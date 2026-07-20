@@ -42,15 +42,15 @@ jobs:
           cat Config/lara.entitlements || echo "[!] Entitlements file missing!"
           echo "[*] Checking project..."
           ls -la lara.xcodeproj/
-          ls -la lara/
+          echo "[*] Checking Info.plist..."
+          cat lara/Info.plist
 
       - name: Clean and Build IPA
         working-directory: Lara3-fixed
         run: |
           chmod +x ipabuild.sh
-          # Force clean before build
           rm -rf build DerivedData
-          ./ipabuild.sh --debug 2>&1 | tee build/xcodebuild-full.log || true
+          ./ipabuild.sh 2>&1 | tee build/xcodebuild-full.log || true
 
       - name: Upload build logs (always)
         if: always()
@@ -85,6 +85,6 @@ jobs:
           else
             gh release create nightly --title "Nightly ($(date -u '+%Y-%m-%d %H:%M UTC'))" --notes-file "$NOTES_FILE" --prerelease
           fi
-          gh release upload nightly Lara3-fixed/build/lara.ipa --clobber || gh release upload nightly Lara3-fixed/build/lara.debug.ipa --clobber
+          gh release upload nightly Lara3-fixed/build/lara.ipa --clobber
           rm -f "$NOTES_FILE"
           echo "[OK] release updated"
