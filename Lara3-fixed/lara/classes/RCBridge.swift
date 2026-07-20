@@ -285,12 +285,20 @@ final class RCBridge {
             }
 
             var newThread: thread_t = 0
-            let tr = thread_create_running(
-                taskPort,
-                ARM_THREAD_STATE64,
-                &state,
-                UInt32(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<UInt32>.size),
-                &newThread
+            let tr: kern_return_t = withUnsafeMutablePointer(to: &state) { statePtr in
+                statePtr.withMemoryRebound(
+                    to: natural_t.self,
+                    capacity: MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<natural_t>.size
+                ) { naturalPtr in
+                    thread_create_running(
+                        taskPort,
+                        ARM_THREAD_STATE64,
+                        naturalPtr,
+                        UInt32(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<UInt32>.size),
+                        &newThread
+                    )
+                }
+            }
             )
             guard tr == KERN_SUCCESS else {
                 return .fail(String(format: "rc-thread-create: thread_create_running failed (kr=0x%x)", tr))
@@ -366,7 +374,7 @@ final class RCBridge {
             let method = parts[1]
             let args = parts.count > 2 ? parts[2] : "{}"
 
-            let conn = xpc_connection_create_mach_service(
+            let conn = RCBridge._xpcCreateMachService(
                 service,
                 DispatchQueue.global(qos: .userInitiated),
                 UInt64(XPC_CONNECTION_MACH_SERVICE_PRIVILEGED)
