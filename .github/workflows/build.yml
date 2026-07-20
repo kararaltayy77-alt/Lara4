@@ -32,7 +32,7 @@ jobs:
           brew update
           brew install ldid || brew reinstall ldid
           which ldid
-          ldid -v
+          ldid
 
       - name: Verify project structure
         working-directory: Lara3-fixed
