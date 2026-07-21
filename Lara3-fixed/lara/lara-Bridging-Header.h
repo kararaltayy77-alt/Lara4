@@ -18,7 +18,6 @@
   #import "amfi.h"
       #import "roothunter.h"
 #import "stage1_root.h"
-#import "tools_kernel_inspect.h"
 
   // tools_creds.h defines tool_result_t as an anonymous struct.
   // tools_pac.h and tools_system.h guard it with #ifndef tool_result_t —
@@ -28,6 +27,7 @@
   #define tool_result_t tool_result_t
   #import "tools_pac.h"
   #import "tools_system.h"
+  #import "tools_kernel_inspect.h"
 
   #import "IconServices.h"
   #import "rc.h"
