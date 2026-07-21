@@ -25,7 +25,10 @@ private func _regDecodePTE() {
             return .fail("decode-pte: usage — decode-pte <pte_hex>\nexample: decode-pte 0x60000000000703")
         }
         let r = ki_decode_pte(pte)
-        return r.code == 0 ? .ok(String(cString: r.msg)) : .fail(String(cString: r.msg))
+        let msg = withUnsafePointer(to: r.msg) { ptr in
+            String(cString: UnsafeRawPointer(ptr).assumingMemoryBound(to: CChar.self))
+        }
+        return r.code == 0 ? .ok(msg) : .fail(msg)
     }
 }
 
@@ -36,7 +39,10 @@ private func _regWatch() {
             return .fail("watch: usage — watch <kernel_va_hex>\nexample: watch 0xfffffff007004000")
         }
         let r = ki_watch(va)
-        return r.code == 0 ? .ok(String(cString: r.msg)) : .fail(String(cString: r.msg))
+        let msg = withUnsafePointer(to: r.msg) { ptr in
+            String(cString: UnsafeRawPointer(ptr).assumingMemoryBound(to: CChar.self))
+        }
+        return r.code == 0 ? .ok(msg) : .fail(msg)
     }
 }
 
@@ -45,7 +51,10 @@ private func _regUcredInfo() {
         guard mgr.dsready else { return .fail("ucredinfo: exploit not ready") }
         let pid = Int32(rawArg.trimmingCharacters(in: .whitespaces)) ?? 0
         let r = ki_ucredinfo(pid)
-        return r.code == 0 ? .ok(String(cString: r.msg)) : .fail(String(cString: r.msg))
+        let msg = withUnsafePointer(to: r.msg) { ptr in
+            String(cString: UnsafeRawPointer(ptr).assumingMemoryBound(to: CChar.self))
+        }
+        return r.code == 0 ? .ok(msg) : .fail(msg)
     }
 }
 
@@ -54,7 +63,10 @@ private func _regCSInfo() {
         guard mgr.dsready else { return .fail("csinfo: exploit not ready") }
         let pid = Int32(rawArg.trimmingCharacters(in: .whitespaces)) ?? 0
         let r = ki_csinfo(pid)
-        return r.code == 0 ? .ok(String(cString: r.msg)) : .fail(String(cString: r.msg))
+        let msg = withUnsafePointer(to: r.msg) { ptr in
+            String(cString: UnsafeRawPointer(ptr).assumingMemoryBound(to: CChar.self))
+        }
+        return r.code == 0 ? .ok(msg) : .fail(msg)
     }
 }
 
