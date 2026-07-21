@@ -543,8 +543,7 @@ final class RCBridge {
             out += String(format: "│ Args:      %@                       │\n", args)
             out += success ? "│ Status:    ✓ SUCCESS               │\n" : "│ Status:    ✗ FAILED                │\n"
             out += "╠══════════════════════════════════════╣\n"
-            out += "Response:
-" + result
+            out += "Response:\n" + result
             out += "\n╚══════════════════════════════════════╝"
             return success ? .ok(out) : .fail(out)
         }
