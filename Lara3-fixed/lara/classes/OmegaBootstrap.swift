@@ -106,7 +106,7 @@ final class OmegaBootstrap {
         registerExtendedECommands()
         registerProcLinkCommands()
         registerPrivilegeShellCommands()
-        registerPPLShellCommands()
+        registerKernelInspectCommands()
         registerKernelObjectExplorer()
         registerProcessExplorer()
         registerIPCExplorer()
@@ -288,8 +288,8 @@ LARA Shell — full command reference (iSH-level access)
   ── EXTENDED MODULES ─────────────────────────────────────
   help-priv                    privilege escalation commands (OmegaExtendedF)
                                (ucred, cs-flags, AMFI, sandbox, system-files)
-  help-ppl                     PAC/KTRR/SMR/PPL analysis commands (OmegaExtendedG)
-                               (pac-reader, ktrr-*, smr-*, ppl-*, auto-ppl-breaker)
+  help-inspect                 Kernel inspection commands (OmegaExtendedG)
+                               (decode-pte, watch, ucredinfo, csinfo)
 
   ── KERNEL OBJECT EXPLORER ──────────────────────────────
   fd-info <pid> <fd>           file descriptor kernel info
@@ -620,7 +620,7 @@ private static func registerKernel() {
             if result == 0 {
                 return .ok("stage1: SUCCESS — kernel UID=0, TF_PLATFORM set ✔️")
             } else if result == -2 {
-                return .fail("stage1: thread_ro ucred is PPL — need STAGE 2 (PAC bypass)")
+                return .fail("stage1: thread_ro ucred is protected — need STAGE 2 (PAC bypass)")
             } else if result == -3 {
                 return .fail("stage1: no valid thread_ro found — need STAGE 2 (PAC bypass)")
             } else if result == -4 {
@@ -630,15 +630,7 @@ private static func registerKernel() {
             }
         }
 
-        OmegaCore.register("ppl-bypass") { _, mgr in
-            guard mgr.dsready else { return .fail("ppl-bypass: exploit not ready — run 'run' first") }
-            let result = ppl_bypass()
-            if result == 0 {
-                return .ok(String(format: "ppl-bypass: privilege escalation achieved — uid=%d ✔️", getuid()))
-            } else {
-                return .fail(String(format: "ppl-bypass: failed (code=%d) — physmap may be unavailable", result))
-            }
-        }
+
 OmegaCore.register("kinfo") { _, mgr in
             guard mgr.dsready else { return .fail("kinfo: exploit not ready — run 'run' first") }
 
@@ -657,8 +649,6 @@ OmegaCore.register("kinfo") { _, mgr in
             let uid = getuid()
             let euid = geteuid()
             let gid = getgid()
-            let pplBypassed = ppl_is_bypassed()
-            let pmOK = pm_fingerprint_ok()
             let amfiEnforce = amfi_get_mac_proc_enforce()
             let offsetsOK = mgr.hasOffsets
             let health = ds_session_health_score()
@@ -671,13 +661,12 @@ OmegaCore.register("kinfo") { _, mgr in
             let healthIcon = health >= 80 ? "✔️" : (health >= 50 ? "⚠️" : "✖️")
             let rootStr = uid == 0 ? "YES ✔️" : "NO ✖️"
             let krwStr = krwReady ? "READY ✔️" : "BROKEN ✖️"
-            let pplStr = pplBypassed ? "BYPASSED ✔️" : (pmOK ? "ENFORCED" : "ENFORCED (no physmap)")
             let sbxStr = mgr.sbxready ? "ESCAPED ✔️" : "CONFINED ✖️"
             let backendStr = rwPCB != 0 ? "IOSurface PCB" : "UNKNOWN"
 
             var lines: [String] = []
-            lines.append(String(format: "SESSION: %@ (%d%%) | KRW %@ | SBX %@ | PPL %@ | ROOT %@",
-                healthStr, health, krwStr, sbxStr, pplStr, rootStr))
+            lines.append(String(format: "SESSION: %@ (%d%%) | KRW %@ | SBX %@ | ROOT %@",
+                healthStr, health, krwStr, sbxStr, rootStr))
             lines.append("")
             lines.append("=== KERNEL STATE DIAGNOSTIC ===")
             lines.append("")
@@ -693,7 +682,6 @@ OmegaCore.register("kinfo") { _, mgr in
             lines.append(String(format: "[PRIV]     uid=%d euid=%d gid=%d", uid, euid, gid))
             lines.append(String(format: "[ROOT]     %@", rootStr))
             lines.append(String(format: "[PAC]      ARMED"))
-            lines.append(String(format: "[PPL]      %@", pplStr))
             lines.append(String(format: "[AMFI]     %@", amfiEnforce == 0xFFFFFFFF ? "0xFFFFFFFF (unknown)" : String(amfiEnforce)))
             lines.append(String(format: "[KTRR]     %@", ktrrState))
             lines.append(String(format: "[VFS]      %@", mgr.vfsready ? "MOUNTED ✔️" : "OFF ✖️"))
@@ -709,11 +697,8 @@ OmegaCore.register("kinfo") { _, mgr in
                 lines.append("Run: offsets")
             } else if amfiEnforce == 0xFFFFFFFF {
                 lines.append("Try: set-all-ids-zero (direct ucred patch)")
-            lines.append("Or:  ppl-bypass (full privilege escalation)")
-            } else if !pmOK && !pplBypassed {
-                lines.append("Run: ppl-bypass")
-            } else if uid != 0 && !pplBypassed {
-                lines.append("Run: ppl-bypass")
+            } else if uid != 0 {
+                lines.append("Run: set-all-ids-zero")
             } else if uid == 0 && amfiEnforce != 0 {
                 lines.append("Run: amfi-disable-globally")
             } else if uid == 0 {
