@@ -5,7 +5,7 @@ import MobileCoreServices
 
 // MARK: - Helpers (internal to bootstrap)
 
-private func parseAddr(_ s: String) -> UInt64? {
+func parseAddr(_ s: String) -> UInt64? {
     let t = s.trimmingCharacters(in: .whitespaces)
     if t.hasPrefix("0x") || t.hasPrefix("0X") {
         return UInt64(t.dropFirst(2), radix: 16)
