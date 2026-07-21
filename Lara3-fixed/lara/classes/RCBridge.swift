@@ -320,7 +320,7 @@ final class RCBridge {
             out += "│ ──────────────────────────────────────────────────────│\n"
 
             for i in 0..<Int(count) {
-                let entry = list[i]
+                var entry = list[i]
                 let pid = entry.pid
                 let uid = entry.uid
                 let gid = entry.gid
@@ -591,7 +591,7 @@ final class RCBridge {
             posix_spawnattr_init(&attr)
 
             var flags: Int32 = POSIX_SPAWN_SETPGROUP
-            posix_spawnattr_setflags(&attr, flags)
+            posix_spawnattr_setflags(&attr, Int16(flags))
 
             var pid: pid_t = 0
             let ret = posix_spawn(&pid, binary, nil, &attr, &cargv, environ)
