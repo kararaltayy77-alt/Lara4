@@ -81,10 +81,11 @@ final class RCBridge {
             // كشف الجهاز الحقيقي
             var sysInfo = utsname()
             uname(&sysInfo)
-            let machine = withUnsafePointer(to: &sysInfo.machine) {
-                $0.withMemoryRebound(to: CChar.self, capacity: 1) {
-                    String(cString: $0)
+            let machine = withUnsafeBytes(of: sysInfo.machine) { raw in
+                if let base = raw.baseAddress?.assumingMemoryBound(to: CChar.self) {
+                    return String(cString: base)
                 }
+                return "unknown"
             }
 
             // تحديد MTE: A12 لا يدعمه، يبدأ من A15
@@ -324,9 +325,12 @@ final class RCBridge {
                 let gid = entry.gid
                 let kaddr = entry.kaddr
 
-                let nameData = Data(bytes: &entry.name, count: 32)
-                let nameLen = nameData.firstIndex(of: 0) ?? 32
-                let name = String(data: nameData.prefix(nameLen), encoding: .utf8) ?? "???"
+                let name = withUnsafeBytes(of: entry.name) { raw in
+                    if let base = raw.baseAddress?.assumingMemoryBound(to: CChar.self) {
+                        return String(cString: base)
+                    }
+                    return "???"
+                }
 
                 guard pid > 0 && pid < 100000 else {
                     out += String(format: "│ ⚠ entry %d: corrupt PID=%d, skipping          │\n", i, pid)
@@ -382,32 +386,10 @@ final class RCBridge {
                 """, kr, proc, task, pid))
             }
 
-            var state = arm_thread_state64_t()
-            memset(&state, 0, MemoryLayout<arm_thread_state64_t>.size)
-            withUnsafeMutableBytes(of: &state) { rawPtr in
-                let ptr = rawPtr.bindMemory(to: UInt64.self)
-                ptr[32] = pc
-                ptr[0] = arg1
-                ptr[1] = arg2
-            }
-
             var newThread: thread_t = 0
-            let tr: kern_return_t = withUnsafeMutablePointer(to: &state) { statePtr in
-                statePtr.withMemoryRebound(
-                    to: natural_t.self,
-                    capacity: MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<natural_t>.size
-                ) { naturalPtr in
-                    thread_create_running(
-                        taskPort,
-                        ARM_THREAD_STATE64,
-                        naturalPtr,
-                        UInt32(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<UInt32>.size),
-                        &newThread
-                    )
-                }
-            }
-            guard tr == KERN_SUCCESS else {
-                return .fail(String(format: "rc-thread-create: thread_create_running failed (kr=0x%x)", tr))
+            let tr = rc_thread_create_helper(taskPort, pc, arg1, arg2, &newThread)
+            guard tr == 0 else {
+                return .fail(String(format: "rc-thread-create: rc_thread_create_helper failed (error=%d)", tr))
             }
 
             var out = "\n╔══════════════════════════════════════╗\n"
