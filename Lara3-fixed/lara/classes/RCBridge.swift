@@ -466,7 +466,7 @@ final class RCBridge {
             let method = parts[1]
             let args = parts.count > 2 ? parts[2] : "{}"
 
-            let result = rc_xpc_send_helper(service, method, args)
+            let result = rc_xpc_send_helper(service, method, args) ?? "XPC ERROR: nil response"
             let success = !result.hasPrefix("XPC ERROR:")
 
             var out = "\n╔══════════════════════════════════════╗\n"
